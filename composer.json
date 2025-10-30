@@ -11,7 +11,7 @@
   ],
   "autoload": {
     "psr-4": {
-      "Playlogiq\\Utils\\": "src/"
+      "PlaylogiqUtils\\": "src/"
     }
   },
   "require": {

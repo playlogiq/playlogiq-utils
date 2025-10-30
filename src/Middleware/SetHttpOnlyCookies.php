@@ -1,6 +1,6 @@
 <?php
 
-namespace Playlogiq\Utils\Middleware;
+namespace PlaylogiqUtils\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;

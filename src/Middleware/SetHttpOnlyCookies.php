@@ -6,7 +6,7 @@ use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Cookie;
 
-class KeepCookiesPrivate
+class SetHttpOnlyCookies
 {
     public function handle(Request $request, Closure $next)
     {

@@ -3,6 +3,8 @@
   "description": "Playlogiq utils",
   "keywords": ["playlogiq", "playlogiq-utils"],
   "license": "MIT",
+  "type": "library",
+  "minimum-stability": "stable",
   "authors": [
     {
       "name": "playlogiq",

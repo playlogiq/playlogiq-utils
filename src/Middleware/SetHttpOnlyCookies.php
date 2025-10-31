@@ -25,7 +25,7 @@ class SetHttpOnlyCookies
                 $cookie->getExpiresTime(),
                 $cookie->getPath(),
                 $cookie->getDomain(),
-                $cookie->isSecure(),
+                true,
                 true,
                 $cookie->isRaw(),
                 method_exists($cookie, 'getSameSite') ? $cookie->getSameSite() : null

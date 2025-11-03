@@ -31,7 +31,8 @@ In the repositories section of the composer.json for the project where you want 
 
 "url": This is the URL of the GitHub repository.
 
-2. Require the Package
+
+🎷 Require the Package
 
 
 Once the repository is defined, you can require the package using the package name defined in its own composer.json file (which may differ from the repository name).

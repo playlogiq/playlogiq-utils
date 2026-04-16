@@ -11,6 +11,9 @@
     }
   ],
   "autoload": {
+    "files": [
+      "src/Polyfills/polyfills.php"
+    ],
     "psr-4": {
       "PlaylogiqUtils\\": "src/"
     }

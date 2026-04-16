@@ -17,6 +17,13 @@
   },
   "require": {
     "php": ">=7.4",
-    "illuminate/http": "^5.8|^6.0|^7.0|^8.37|^9.0"
+    "illuminate/bus": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "illuminate/contracts": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "laravel-zero/foundation": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "illuminate/database": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "illuminate/http": "^5.8|^6.0|^7.0|^8.37|^9.0",
+    "illuminate/queue": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "illuminate/support": "^5.8|^6.0|^7.0|^8.0|^9.0",
+    "nesbot/carbon": "^2.0|^3.0"
   }
 }

@@ -472,16 +472,24 @@ class StatusCheckService
     // Cache
     // -----------------------------------------------------------------
 
-    private function probeCache(): array
+    /**
+     * A keyed put/get/forget round-trip against the store this component
+     * targets — proving the store actually accepts writes, rather than only
+     * reporting which store is configured.
+     *
+     * @param string|null $store null follows cache.default
+     */
+    private function probeCache(?string $store = null): array
     {
-        $store = (string) config('cache.default');
+        $name = $store !== null && $store !== '' ? $store : (string) config('cache.default');
 
         $key = 'status:probe:' . Str::random(16);
         $value = (string) microtime(true);
 
-        Cache::put($key, $value, 10);
-        $readBack = Cache::get($key);
-        Cache::forget($key);
+        $cache = Cache::store($store !== null && $store !== '' ? $store : null);
+        $cache->put($key, $value, 10);
+        $readBack = $cache->get($key);
+        $cache->forget($key);
 
         if ((string) $readBack !== $value) {
             throw new RuntimeException('put/get round-trip returned a different value');
@@ -489,9 +497,9 @@ class StatusCheckService
 
         return [
             'details' => [
-                'store' => $store,
-                'driver' => config("cache.stores.{$store}.driver"),
-                'connection' => config("cache.stores.{$store}.connection"),
+                'store' => $name,
+                'driver' => config("cache.stores.{$name}.driver"),
+                'connection' => config("cache.stores.{$name}.connection"),
                 'round_trip' => 'ok',
             ],
         ];

@@ -163,6 +163,13 @@ class StatusCheckService
                 ->withCritical(true);
         }
 
+        foreach ($this->unknownReadinessComponents() as $name) {
+            $components[$name] = ComponentStatus::failed(
+                $name,
+                "unknown readiness component [{$name}]"
+            )->withCritical(true);
+        }
+
         return new StatusReport($components, $this->appMeta(), (microtime(true) - $startedAt) * 1000);
     }
 
@@ -206,6 +213,28 @@ class StatusCheckService
         }
 
         return $resolved;
+    }
+
+    /**
+     * Names in readiness.checks that no component can satisfy — a typo, or a
+     * component that has no readiness probe. Returned rather than ignored
+     * because a silently reduced readiness set is worse than a loud failure.
+     *
+     * @return string[]
+     */
+    private function unknownReadinessComponents(): array
+    {
+        $configured = (array) config('status.readiness.checks', self::availableReadinessChecks());
+        $available = self::availableReadinessChecks();
+        $unknown = [];
+
+        foreach ($configured as $name) {
+            if (! in_array($name, $available, true)) {
+                $unknown[] = (string) $name;
+            }
+        }
+
+        return $unknown;
     }
 
     /**

@@ -22,49 +22,94 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Enabled Checks
+    | Components
     |--------------------------------------------------------------------------
     |
-    | Components reported by GET /status, in report order. Remove a name here
-    | (or via STATUS_CHECKS, a comma separated list) to stop probing it — a
-    | disabled component is simply absent from the payload.
+    | Every component the status report knows how to probe, in report order.
+    | One entry per component, holding three things:
     |
-    | Available: mysql, mysql_read, mysql_ro, mysql_bo, mongodb, redis,
-    |            redis_others, cache, queue, storage, passport_keys
+    |   enabled     Whether this project runs the service at all. A disabled
+    |               component is absent from the report AND excluded from
+    |               readiness, even if readiness.checks names it — "we do not
+    |               run Mongo" is one fact, stated once.
+    |   connection  The database or Redis connection to probe. Projects that
+    |   / store     name their connections differently point these at their own
+    |               names. `cache` takes a `store` instead; null follows
+    |               cache.default.
+    |   critical    Only a failing critical component makes GET /status answer
+    |               503. Everything else degrades the report while still
+    |               answering 200, so a peripheral outage does not deregister
+    |               every instance behind the load balancer. Absent means false.
+    |
+    | Components a typical project does not run ship disabled: a read replica,
+    | a backoffice database, Mongo, a second Redis, and Passport keys. Turn on
+    | what you have.
+    |
+    | Readiness reuses these targets; see the readiness block below.
     |
     */
 
-    'checks' => $statusList('STATUS_CHECKS', 'mysql,mysql_read,mysql_ro,mysql_bo,mongodb,redis,redis_others,cache,queue,storage,passport_keys'),
+    'components' => [
 
-    /*
-    |--------------------------------------------------------------------------
-    | Critical Checks
-    |--------------------------------------------------------------------------
-    |
-    | Only a failing check listed here makes GET /status answer 503. Everything
-    | else degrades the report ("degraded") while still answering 200, so a
-    | peripheral outage does not deregister every instance behind the load
-    | balancer. Keep this to the components the app genuinely cannot serve
-    | traffic without: the primary MySQL writer, the Redis cache backend and
-    | the cache store itself.
-    |
-    */
+        'mysql' => [
+            'enabled' => (bool) env('STATUS_CHECK_MYSQL', true),
+            'connection' => env('STATUS_CONN_MYSQL', 'mysql'),
+            'critical' => true,
+        ],
 
-    'critical' => $statusList('STATUS_CRITICAL_CHECKS', 'mysql,redis,cache'),
+        // The read PDO of the same connection as `mysql`, which is why it
+        // shares STATUS_CONN_MYSQL: pointing them at different databases would
+        // make the report describe a split that does not exist.
+        'mysql_read' => [
+            'enabled' => (bool) env('STATUS_CHECK_MYSQL_READ', true),
+            'connection' => env('STATUS_CONN_MYSQL', 'mysql'),
+        ],
 
-    /*
-    |--------------------------------------------------------------------------
-    | Read Replica Connection
-    |--------------------------------------------------------------------------
-    |
-    | The database connection the `mysql_ro` check and the `database_read`
-    | readiness check probe. Applications that name their replica connection
-    | something else point this at it; applications with no replica leave
-    | `database_read` out of the readiness set entirely.
-    |
-    */
+        'mysql_ro' => [
+            'enabled' => (bool) env('STATUS_CHECK_MYSQL_RO', false),
+            'connection' => env('STATUS_CONN_MYSQL_RO', 'mysql_ro'),
+        ],
 
-    'read_connection' => env('STATUS_READ_CONNECTION', 'mysql_ro'),
+        'mysql_bo' => [
+            'enabled' => (bool) env('STATUS_CHECK_MYSQL_BO', false),
+            'connection' => env('STATUS_CONN_MYSQL_BO', 'mysql_bo'),
+        ],
+
+        'mongodb' => [
+            'enabled' => (bool) env('STATUS_CHECK_MONGODB', false),
+            'connection' => env('STATUS_CONN_MONGODB', 'mongodb'),
+        ],
+
+        'redis' => [
+            'enabled' => (bool) env('STATUS_CHECK_REDIS', true),
+            'connection' => env('STATUS_CONN_REDIS', 'default'),
+            'critical' => true,
+        ],
+
+        'redis_others' => [
+            'enabled' => (bool) env('STATUS_CHECK_REDIS_OTHERS', false),
+            'connection' => env('STATUS_CONN_REDIS_OTHERS', 'others'),
+        ],
+
+        'cache' => [
+            'enabled' => (bool) env('STATUS_CHECK_CACHE', true),
+            'store' => env('STATUS_CACHE_STORE', null),
+            'critical' => true,
+        ],
+
+        'queue' => [
+            'enabled' => (bool) env('STATUS_CHECK_QUEUE', true),
+        ],
+
+        'storage' => [
+            'enabled' => (bool) env('STATUS_CHECK_STORAGE', true),
+        ],
+
+        'passport_keys' => [
+            'enabled' => (bool) env('STATUS_CHECK_PASSPORT_KEYS', false),
+        ],
+
+    ],
 
     /*
     |--------------------------------------------------------------------------
@@ -117,8 +162,8 @@ return [
     | every component here is required, and any one of them failing means the
     | instance is not ready.
     |
-    |   database        primary MySQL — connect (which authenticates) + query
-    |   database_read   the mysql_ro replica core models read through
+    |   mysql           primary MySQL — connect (which authenticates) + query
+    |   mysql_ro        the read replica core models read through
     |   redis           cache/session backend, write+read round-trip
     |   mongodb         authorised command, not just a pre-auth ping
     |   config          essential configuration resolves
@@ -142,7 +187,7 @@ return [
         |   mongodb         a mongodb connection and the mongodb extension
         |   passport_keys   Laravel Passport OAuth signing keys
         */
-        'checks' => $statusList('STATUS_READY_CHECKS', 'database,redis,config,app_key,storage'),
+        'checks' => $statusList('STATUS_READY_CHECKS', 'mysql,redis,config,app_key,storage'),
 
         /*
         | Whether the ABSENCE of credentials on a core component fails readiness.

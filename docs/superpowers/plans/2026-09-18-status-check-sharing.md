@@ -6,7 +6,7 @@
 
 **Architecture:** Three classes plus a config file move into a new `PlaylogiqUtils\Status` namespace, wired by an auto-discovered service provider that merges a default `config/status.php`. The `/status` probes already skip missing connections, so their defaults ship verbatim; the readiness probes throw on a missing connection, so their default narrows to a universal core and betmaker-bo pins its full set via env. `SecurityHeaders` moves alongside, with its cache-failure guard and without its unreachable CSP code.
 
-**Tech Stack:** PHP 7.4+, Laravel 5.8–9 (`illuminate/support`, `illuminate/database`, `illuminate/http`, `laravel-zero/foundation`), Composer VCS package distribution, Laravel package auto-discovery.
+**Tech Stack:** PHP 7.4+, Laravel 5.8–9 (`illuminate/support`, `illuminate/database`, `illuminate/http`, `illuminate/encryption`, `laravel-zero/foundation`), Composer VCS package distribution, Laravel package auto-discovery.
 
 **Spec:** `docs/superpowers/specs/2026-09-18-status-check-sharing-design.md`
 
@@ -14,12 +14,79 @@
 
 - **PHP floor is `>=7.4`.** No `match`, no nullsafe `?->`, no promoted constructor properties, no `str_starts_with` / `str_contains` / `str_ends_with`, no union types, no enums, no first-class callable syntax. Typed properties, nullable types, `declare(strict_types=1)` and arrow functions are fine.
 - **Laravel floor is `^5.8`**, ceiling `^9.0`. Do not use APIs newer than Laravel 5.8 without a guard.
-- **No new Composer dependencies**, runtime or dev. Everything needed is already in `require`.
+- **One new Composer dependency, and only one:** `illuminate/encryption` (same `^5.8|^6.0|^7.0|^8.0|^9.0` constraint as its siblings). `StatusCheckService::probeAppKey()` calls `Encrypter::supported()` statically and round-trips through the `Crypt` facade, and `illuminate/encryption` is not pulled in transitively by `laravel-zero/foundation` — verified by `class_exists()` against the installed tree. `app_key` is in the default readiness set, so this path runs out of the box. No other dependency may be added, and no dev dependencies.
 - **Namespace root is `PlaylogiqUtils\`**, PSR-4 mapped to `src/`.
 - **No test harness.** The approved scope excludes PHPUnit and Orchestra Testbench. Verification in this plan is `php -l` plus throwaway smoke scripts run from the scratchpad directory and never committed. Where a class is plain PHP with no framework dependency (the two value objects), the smoke script is written first and must fail before the code is in place.
-- **Scratchpad for throwaway scripts:** `/private/tmp/claude-501/-Users-mateomartinez-development-pq-docker-src-playlogiq-utils/f35c9d30-ac0f-4dce-b9f6-66a93b66d1d8/scratchpad`. Referred to below as `$SCRATCH`. Set it once per shell: `set -x SCRATCH /private/tmp/claude-501/-Users-mateomartinez-development-pq-docker-src-playlogiq-utils/f35c9d30-ac0f-4dce-b9f6-66a93b66d1d8/scratchpad` (fish) — the user's shell is fish, not bash.
-- **Repo:** all work in Tasks 1–6 happens in `/Users/mateomartinez/development/pq-docker/src/playlogiq-utils`. Task 7 is a separate repo and a separate PR.
 - **Source of truth for ported code:** `refs/pull/854/head` of `playlogiq/betmaker-bo`. Never retype these files by hand — download them, then apply the edits each task specifies.
+
+## Toolchain
+
+**The host's default `php` is broken** — `/opt/homebrew/bin/php` is php@7.1 with a
+missing `libaspell` dylib and will not start. Never invoke bare `php`. Export
+these once per shell before starting any task:
+
+```bash
+export SCRATCH=/private/tmp/claude-501/-Users-mateomartinez-development-pq-docker-src-playlogiq-utils/f35c9d30-ac0f-4dce-b9f6-66a93b66d1d8/scratchpad
+export PHP=/opt/homebrew/opt/php@8.4/bin/php
+export REPO=/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+```
+
+The user's interactive shell is fish, where that syntax is
+`set -x SCRATCH ...` — but tool-invoked commands run under a POSIX shell, so
+`export` is correct in the steps below.
+
+| Job | Command | Why |
+|---|---|---|
+| Syntax check | `"$SCRATCH/plqlint" <file>` | Lints inside the `app` container on **PHP 7.4.33**, the package's declared floor. Host php@8.4 would accept syntax that breaks on 7.4. |
+| Run a script | `$PHP <script>` | Host php@8.4 — the only working host PHP. Needed for anything touching `vendor/autoload.php`. |
+| Composer | `$PHP /usr/local/bin/composer <cmd>` | Composer 2.10.3 driven by php@8.4. |
+
+**Do not define `COMPOSER` as a two-word variable.** `export COMPOSER="$PHP /usr/local/bin/composer"` then `$COMPOSER install` fails with `no such file or directory: /opt/homebrew/opt/php@8.4/bin/php /usr/local/bin/composer` — the whole string is treated as one command name rather than being word-split. Write `$PHP /usr/local/bin/composer …` in full each time. The steps below do.
+
+`plqlint` copies each file into the `app` container, runs `php -l`, filters
+Xdebug noise, prints `OK (php7.4) <path>` or `FAIL (php7.4) <path>` with the
+parse error, and exits non-zero on any failure. `playlogiq-utils` is **not**
+mounted into any container — the containers mount named volumes, and only
+`betmaker` and `backoffice` among them are bind mounts — which is why the copy
+step exists. Create it before Task 1:
+
+```bash
+mkdir -p "$SCRATCH"
+cat > "$SCRATCH/plqlint" <<'LINT'
+#!/bin/sh
+set -e
+[ $# -eq 0 ] && { echo "usage: plqlint <file.php> [...]" >&2; exit 2; }
+status=0
+for f in "$@"; do
+    if [ ! -f "$f" ]; then echo "plqlint: no such file: $f" >&2; status=1; continue; fi
+    base=$(basename "$f")
+    docker cp "$f" "app:/tmp/plqlint-$base" >/dev/null
+    out=$(docker exec app php -l "/tmp/plqlint-$base" 2>&1 | grep -v -i xdebug || true)
+    docker exec app rm -f "/tmp/plqlint-$base" >/dev/null 2>&1 || true
+    case "$out" in
+        *"No syntax errors detected"*) echo "OK (php7.4)  $f" ;;
+        *) echo "FAIL (php7.4)  $f"; echo "$out" | sed 's/^/    /'; status=1 ;;
+    esac
+done
+exit $status
+LINT
+chmod +x "$SCRATCH/plqlint"
+```
+
+Confirm it can fail before trusting it:
+
+```bash
+printf '<?php\n$x = match(1) { 1 => "a" };\n' > "$SCRATCH/bad74.php"
+"$SCRATCH/plqlint" "$SCRATCH/bad74.php"
+```
+
+Expected: `FAIL (php7.4)` with `unexpected '=>' (T_DOUBLE_ARROW)`, exit 1. A
+`match` expression is valid PHP 8 and invalid PHP 7.4, so a pass here means the
+lint is hitting the wrong interpreter.
+
+- **Repo:** all work in Tasks 1–6 happens in `$REPO` (a worktree on branch
+  `PQPL-6496-status-checks`). Task 7 is a separate repo and a separate PR.
+- **betmaker-bo is checked out at `/Users/mateomartinez/development/pq-docker/src/betmaker`**, not `src/betmaker-bo`. (`src/backoffice` is the unrelated `playlogiq/backoffice` repo — do not touch it.) It is bind-mounted into the `app` (PHP 7.4) and `app81` (PHP 8.1) containers at `/opt/app/betmaker`, so host edits are visible there immediately. Task 7's `artisan`, `composer` and `phpunit` commands run **inside a container**, not on the host; Task 7 Step 1 pins which one.
 
 ---
 
@@ -77,8 +144,8 @@ Create `$SCRATCH/status_vo_smoke.php`:
 
 declare(strict_types=1);
 
-require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/src/Status/ComponentStatus.php';
-require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/src/Status/StatusReport.php';
+require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks/src/Status/ComponentStatus.php';
+require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks/src/Status/StatusReport.php';
 
 use PlaylogiqUtils\Status\ComponentStatus;
 use PlaylogiqUtils\Status\StatusReport;
@@ -157,7 +224,7 @@ exit($failures === 0 ? 0 : 1);
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-php "$SCRATCH/status_vo_smoke.php"
+$PHP "$SCRATCH/status_vo_smoke.php"
 ```
 
 Expected: a fatal error — `Failed to open stream: No such file or directory` for `src/Status/ComponentStatus.php`. The files do not exist yet.
@@ -165,7 +232,7 @@ Expected: a fatal error — `Failed to open stream: No such file or directory` f
 - [ ] **Step 3: Download the two value objects from the PR**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 mkdir -p src/Status
 
 gh api "repos/playlogiq/betmaker-bo/contents/app/ValueObjects/Status/ComponentStatus.php?ref=refs/pull/854/head" \
@@ -180,7 +247,7 @@ gh api "repos/playlogiq/betmaker-bo/contents/app/ValueObjects/Status/StatusRepor
 Both files declare `namespace App\ValueObjects\Status;`. Replace it in both:
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 sed -i '' 's/^namespace App\\ValueObjects\\Status;$/namespace PlaylogiqUtils\\Status;/' \
   src/Status/ComponentStatus.php src/Status/StatusReport.php
 ```
@@ -199,8 +266,8 @@ Expected: both files print `namespace PlaylogiqUtils\Status;`, and the second gr
 - [ ] **Step 5: Lint both files**
 
 ```bash
-php -l src/Status/ComponentStatus.php
-php -l src/Status/StatusReport.php
+"$SCRATCH/plqlint" src/Status/ComponentStatus.php
+"$SCRATCH/plqlint" src/Status/StatusReport.php
 ```
 
 Expected: `No syntax errors detected` for each.
@@ -208,7 +275,7 @@ Expected: `No syntax errors detected` for each.
 - [ ] **Step 6: Run the smoke script to verify it passes**
 
 ```bash
-php "$SCRATCH/status_vo_smoke.php"
+$PHP "$SCRATCH/status_vo_smoke.php"
 ```
 
 Expected: every line `PASS`, final line `ALL PASS`, exit code 0.
@@ -216,7 +283,7 @@ Expected: every line `PASS`, final line `ALL PASS`, exit code 0.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add src/Status/ComponentStatus.php src/Status/StatusReport.php
 git commit -m "PQPL-6496: add status value objects
 
@@ -249,7 +316,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: Download the service**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 gh api "repos/playlogiq/betmaker-bo/contents/app/Services/Status/StatusCheckService.php?ref=refs/pull/854/head" \
   --jq .content | base64 -d > src/Status/StatusCheckService.php
 wc -l src/Status/StatusCheckService.php
@@ -271,7 +338,7 @@ use App\ValueObjects\Status\StatusReport;
 The value objects now live in the same namespace as the service, so both `use` lines must go — leaving them would import non-existent classes.
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 sed -i '' \
   -e 's/^namespace App\\Services\\Status;$/namespace PlaylogiqUtils\\Status;/' \
   -e '/^use App\\ValueObjects\\Status\\ComponentStatus;$/d' \
@@ -349,7 +416,7 @@ Expected: exactly one line — the `'mysql_ro' => 'probeMysqlReadOnlyConnection'
 - [ ] **Step 5: Lint**
 
 ```bash
-php -l src/Status/StatusCheckService.php
+"$SCRATCH/plqlint" src/Status/StatusCheckService.php
 ```
 
 Expected: `No syntax errors detected`.
@@ -365,9 +432,9 @@ Expected: nothing, `exit: 1`. The package floor is PHP 7.4.
 - [ ] **Step 7: Verify the class loads through the package autoloader**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-composer dump-autoload 2>&1 | tail -3
-php -r 'require "vendor/autoload.php"; $r = new ReflectionClass(PlaylogiqUtils\Status\StatusCheckService::class); echo $r->getName(), "\n"; print_r(PlaylogiqUtils\Status\StatusCheckService::availableChecks()); print_r(PlaylogiqUtils\Status\StatusCheckService::availableReadinessChecks());'
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+$PHP /usr/local/bin/composer dump-autoload 2>&1 | tail -3
+$PHP -r 'require "vendor/autoload.php"; $r = new ReflectionClass(PlaylogiqUtils\Status\StatusCheckService::class); echo $r->getName(), "\n"; print_r(PlaylogiqUtils\Status\StatusCheckService::availableChecks()); print_r(PlaylogiqUtils\Status\StatusCheckService::availableReadinessChecks());'
 ```
 
 Expected: the class name, then the 11 check names, then the 8 readiness names. Both static methods are pure `array_keys()` over class constants and touch no framework code, so they run without a booted application.
@@ -377,7 +444,7 @@ If `vendor/` does not exist yet, run `composer install` first.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add src/Status/StatusCheckService.php
 git commit -m "PQPL-6496: add StatusCheckService
 
@@ -406,7 +473,7 @@ The heart of the port. Four changes from PR #854's file, each with a different r
 - [ ] **Step 1: Download the config**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 mkdir -p config
 gh api "repos/playlogiq/betmaker-bo/contents/config/status.php?ref=refs/pull/854/head" \
   --jq .content | base64 -d > config/status.php
@@ -492,9 +559,9 @@ Leave `'exclusion_rationale' => ...` as written — the reasoning is general.
 - [ ] **Step 6: Verify the file parses and defines exactly the expected keys**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-php -l config/status.php
-php -r 'function env($k, $d = null) { return $d; } $c = require "config/status.php"; ksort($c); print_r(array_keys($c)); print_r(array_keys($c["readiness"])); print_r($c["readiness"]["checks"]); print_r($c["checks"]); echo "read_connection: ", $c["read_connection"], "\n";'
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+"$SCRATCH/plqlint" config/status.php
+$PHP -r 'function env($k, $d = null) { return $d; } $c = require "config/status.php"; ksort($c); print_r(array_keys($c)); print_r(array_keys($c["readiness"])); print_r($c["readiness"]["checks"]); print_r($c["checks"]); echo "read_connection: ", $c["read_connection"], "\n";'
 ```
 
 The `env()` stub is needed because the config file calls `env()` at top level and there is no Laravel application booted here.
@@ -514,7 +581,7 @@ If `detail` or either `min_interval_seconds` appears, Step 4 was incomplete.
 - [ ] **Step 7: Cross-check the config against what the service actually reads**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 grep -o "config('status[^)']*'" src/Status/StatusCheckService.php | sed "s/config('status\.//;s/'$//" | sort -u
 ```
 
@@ -525,7 +592,7 @@ Every one must exist in the config from Step 6. `excluded_integrations` and `exc
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add config/status.php
 git commit -m "PQPL-6496: add default status config
 
@@ -605,9 +672,9 @@ Two things worth knowing. `mergeConfigFrom` is shallow — it merges only the to
 - [ ] **Step 2: Lint and verify the config path resolves**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-php -l src/Status/StatusServiceProvider.php
-php -r 'echo realpath("src/Status/../../config/status.php") ?: "PATH NOT FOUND", "\n";'
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+"$SCRATCH/plqlint" src/Status/StatusServiceProvider.php
+$PHP -r 'echo realpath("src/Status/../../config/status.php") ?: "PATH NOT FOUND", "\n";'
 ```
 
 Expected: `No syntax errors detected`, then the absolute path to `config/status.php`. If it prints `PATH NOT FOUND`, Task 3 did not create the file where this provider expects it.
@@ -631,9 +698,9 @@ The double backslashes are required: this is JSON, and `\S` would otherwise be a
 - [ ] **Step 4: Verify composer.json is valid and the provider name is exact**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-composer validate --no-check-publish 2>&1 | tail -5
-php -r 'require "vendor/autoload.php"; $j = json_decode(file_get_contents("composer.json"), true); $p = $j["extra"]["laravel"]["providers"][0]; echo $p, "\n"; echo class_exists($p) ? "class resolves\n" : "CLASS DOES NOT RESOLVE\n";'
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+$PHP /usr/local/bin/composer validate --no-check-publish 2>&1 | tail -5
+$PHP -r 'require "vendor/autoload.php"; $j = json_decode(file_get_contents("composer.json"), true); $p = $j["extra"]["laravel"]["providers"][0]; echo $p, "\n"; echo class_exists($p) ? "class resolves\n" : "CLASS DOES NOT RESOLVE\n";'
 ```
 
 Expected: `./composer.json is valid`, then `PlaylogiqUtils\Status\StatusServiceProvider`, then `class resolves`.
@@ -643,8 +710,8 @@ A typo here fails silently in consumers — Laravel skips a provider class it ca
 - [ ] **Step 5: Verify the merged config is what a consumer would see**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-php -r '
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+$PHP -r '
 function env($k, $d = null) { return $d; }
 $c = require "config/status.php";
 echo "readiness.checks:  ", implode(",", $c["readiness"]["checks"]), "\n";
@@ -664,7 +731,7 @@ critical:          mysql,redis,cache
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add src/Status/StatusServiceProvider.php composer.json
 git commit -m "PQPL-6496: register status config via service provider
 
@@ -768,8 +835,8 @@ Behaviour is unchanged: with the flag off it returns early, and with the flag on
 - [ ] **Step 2: Lint and confirm the PHP 7.4 floor holds**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
-php -l src/Middleware/SecurityHeaders.php
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
+"$SCRATCH/plqlint" src/Middleware/SecurityHeaders.php
 grep -nE 'str_starts_with|str_contains|str_ends_with|\?->|\bmatch\s*\(' src/Middleware/SecurityHeaders.php ; echo "exit: $?"
 ```
 
@@ -806,7 +873,7 @@ namespace Illuminate\Support\Facades {
 namespace {
     // The fake Cache facade above is already declared, so the autoloader is
     // never asked for the real one. Everything else comes from vendor.
-    require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/vendor/autoload.php';
+    require '/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks/vendor/autoload.php';
 
     use Illuminate\Http\Request;
     use Illuminate\Support\Facades\Cache;
@@ -841,7 +908,7 @@ namespace {
 ```
 
 ```bash
-php "$SCRATCH/security_headers_smoke.php"
+$PHP "$SCRATCH/security_headers_smoke.php"
 ```
 
 Expected: `PASS  cache outage does not break the request`, then `ALL PASS`, exit 0.
@@ -851,7 +918,7 @@ To confirm the test can fail, temporarily change `catch (\Throwable $e)` to `cat
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add src/Middleware/SecurityHeaders.php
 git commit -m "PQPL-6496: add SecurityHeaders middleware
 
@@ -996,7 +1063,7 @@ Redis outage cannot 500 every request — including the health endpoint.
 - [ ] **Step 2: Verify every documented default matches the code**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 grep -o "env('STATUS[^)]*)" config/status.php
 grep -n "STATUS_READ_CONNECTION\|STATUS_READY_CHECKS\|STATUS_CHECKS\|STATUS_CRITICAL" README.md
 ```
@@ -1006,7 +1073,7 @@ Expected: every `STATUS_*` variable in the config appears in the README table wi
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils
+cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 git add README.md
 git commit -m "PQPL-6496: document status checks in the README
 
@@ -1042,10 +1109,29 @@ A different repository and a separate PR, stacked on top of PR #854. Do not star
 - Consumes: everything Tasks 1–6 produced.
 - Produces: nothing other code depends on.
 
-- [ ] **Step 1: Branch and require the package**
+- [ ] **Step 1: Pin the container, branch, and require the package**
+
+betmaker-bo's `composer`, `artisan` and `phpunit` all run **inside a container** — the host has no usable PHP. The repo is bind-mounted at `/opt/app/betmaker` in both `app` (PHP 7.4.33) and `app81` (PHP 8.1.34), so host edits appear there immediately.
+
+Confirm which one the app actually runs under, and use it for every command in this task:
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+docker exec app81 sh -c 'cd /opt/app/betmaker && php -v | head -1 && php artisan --version'
+```
+
+Expected: PHP 8.1.34 and a Laravel 8.x version string. betmaker-bo declares `php: ^7.3|^8.0` and was moved to PHP 8.1, so `app81` is the expected answer. If `artisan` errors there, re-run against `app` and use `app` throughout instead.
+
+Define it once:
+
+```bash
+export BMC=app81   # or app, per the check above
+export BM='docker exec '"$BMC"' sh -c'
+```
+
+Branch on the host, where git runs:
+
+```bash
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 git checkout main && git pull
 git checkout -b PQPL-6496-status-checks-from-utils
 ```
@@ -1064,19 +1150,17 @@ Add to `composer.json` — `repositories` may already exist, in which case appen
 Then:
 
 ```bash
-composer require playlogiq/playlogiq-utils:dev-main
+$BM 'cd /opt/app/betmaker && composer require playlogiq/playlogiq-utils:dev-main'
 ```
 
 - [ ] **Step 2: Verify the provider auto-discovered**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
-php artisan package:discover
-php artisan config:clear
-php artisan tinker --execute='dump(config("status.readiness.checks"));'
+$BM 'cd /opt/app/betmaker && php artisan package:discover && php artisan config:clear'
+$BM 'cd /opt/app/betmaker && php artisan tinker --execute=\'dump(config("status.readiness.checks"));\''
 ```
 
-Expected: `package:discover` lists `playlogiq/playlogiq-utils`, and the dump shows the package default `['database','redis','config','app_key','storage']`. betmaker-bo's own `config/status.php` from PR #854 is still on disk and takes precedence over the merge, so if the dump shows the eight-name list instead, that is expected at this point — Step 5 reconciles it.
+Expected: `package:discover` lists `playlogiq/playlogiq-utils`, and the dump shows the package default `['mysql','redis','config','app_key','storage']`. betmaker-bo's own `config/status.php` from PR #854 is still on disk and takes precedence over the merge, so if the dump shows the eight-name list instead, that is expected at this point — Step 5 reconciles it.
 
 - [ ] **Step 3: Pin the readiness set before deleting anything**
 
@@ -1085,14 +1169,21 @@ This preserves PR #854's reviewed behaviour exactly. Do it first, so no window e
 Add to `.env` and `.env.example`:
 
 ```
-STATUS_READY_CHECKS=database,database_read,redis,mongodb,config,app_key,storage,passport_keys
-STATUS_READ_CONNECTION=mysql_ro
+STATUS_CHECK_MYSQL_RO=true
+STATUS_CHECK_MYSQL_BO=true
+STATUS_CHECK_MONGODB=true
+STATUS_CHECK_REDIS_OTHERS=true
+STATUS_CHECK_PASSPORT_KEYS=true
+
+STATUS_READY_CHECKS=mysql,mysql_ro,redis,mongodb,config,app_key,storage,passport_keys
 ```
+
+This reproduces PR #854's behaviour exactly: all eleven components in the report, the same eight in the readiness set, the same connections. `STATUS_CONN_*` are all left at their defaults because betmaker-bo's connection names already match them.
 
 - [ ] **Step 4: Delete the four app files**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 git rm app/Services/Status/StatusCheckService.php \
        app/ValueObjects/Status/ComponentStatus.php \
        app/ValueObjects/Status/StatusReport.php \
@@ -1105,12 +1196,12 @@ rmdir app/Services/Status app/ValueObjects/Status 2>/dev/null || true
 betmaker-bo's `config/status.php` is PR #854's file. Replace it with the package's, then restore the integration inventory:
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
-cp config/status.php /tmp/status-bo-original.php
-php artisan vendor:publish --tag=playlogiq-status-config --force
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
+cp config/status.php "$SCRATCH/status-bo-original.php"
+$BM 'cd /opt/app/betmaker && php artisan vendor:publish --tag=playlogiq-status-config --force'
 ```
 
-Then reopen `config/status.php` and copy the `readiness.excluded_integrations` array back from `/tmp/status-bo-original.php` — the nine categories from `sportsbook` through `edge_and_geo`. Leave every other key at the package default; `.env` from Step 3 supplies the readiness set.
+Then reopen `config/status.php` and copy the `readiness.excluded_integrations` array back from `$SCRATCH/status-bo-original.php` — the nine categories from `sportsbook` through `edge_and_geo`. Leave every other key at the package default; `.env` from Step 3 supplies the readiness set.
 
 - [ ] **Step 6: Repoint the route**
 
@@ -1135,7 +1226,7 @@ Everything else in the closure — the hash id, both `Log::info` branches, the `
 In `app/Http/Kernel.php`, replace `\App\Http\Middleware\SecurityHeaders::class` with `\PlaylogiqUtils\Middleware\SecurityHeaders::class`. It may appear in more than one group:
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 grep -n "SecurityHeaders" app/Http/Kernel.php
 ```
 
@@ -1144,16 +1235,18 @@ Change every occurrence, then re-run the grep to confirm no `App\Http\Middleware
 - [ ] **Step 8: Repoint the tests**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 grep -rn "App\\\\ValueObjects\\\\Status\|App\\\\Services\\\\Status" tests/
 ```
 
 In each hit, change the `use` statements to `PlaylogiqUtils\Status\ComponentStatus`, `PlaylogiqUtils\Status\StatusReport` and `PlaylogiqUtils\Status\StatusCheckService`. The tests keep their current file paths and class names — moving them is not part of this work.
 
+> `CheckHttpStatusTest` also asserts on readiness component names. Two changed: `database` is now `mysql` and `database_read` is now `mysql_ro`. Update those assertions, and warn the team that the readiness log payload's `components.database` / `components.database_read` keys changed with them — any log query or dashboard matching those names needs the same edit.
+
 - [ ] **Step 9: Verify nothing still points at the old namespaces**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 grep -rn "App\\\\Services\\\\Status\|App\\\\ValueObjects\\\\Status\|App\\\\Http\\\\Middleware\\\\SecurityHeaders" \
   app/ routes/ config/ tests/ ; echo "exit: $?"
 ```
@@ -1163,26 +1256,26 @@ Expected: nothing, `exit: 1`.
 - [ ] **Step 10: Run the tests**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
-php artisan config:clear
-./vendor/bin/phpunit tests/Unit/ValueObjects/Status/StatusReportTest.php
-./vendor/bin/phpunit tests/Feature/Http/Controllers/CheckHttpStatusTest.php
+$BM 'cd /opt/app/betmaker && php artisan config:clear'
+$BM 'cd /opt/app/betmaker && ./vendor/bin/phpunit tests/Unit/ValueObjects/Status/StatusReportTest.php'
+$BM 'cd /opt/app/betmaker && ./vendor/bin/phpunit tests/Feature/Http/Controllers/CheckHttpStatusTest.php'
 ```
 
-Expected: both green. `CheckHttpStatusTest` exercises the real endpoint, so a failure here means the readiness set resolved differently than before — check that Step 3's `.env` value is in effect with `php artisan tinker --execute='dump(config("status.readiness.checks"));'`, which must print all eight names.
+Expected: both green. `CheckHttpStatusTest` exercises the real endpoint, so a failure here means the readiness set resolved differently than before — check that Step 3's `.env` value is in effect by re-running the Step 2 tinker command, which must now print all eight names.
 
 - [ ] **Step 11: Hit the endpoint against real infrastructure**
 
 The tests do not prove the probes work; only a live run does.
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 curl -i http://localhost/checkHttpStatus
 ```
 
 Expected: `200` and a 32-character hex id in the body. Then find the log line for that id and confirm every one of the eight readiness components is present and `ok`:
 
 ```bash
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 grep "readiness <the-id>" storage/logs/laravel.log | tail -1 | python3 -m json.tool | head -60
 ```
 
@@ -1191,7 +1284,7 @@ If a component reports `failed`, diagnose it before opening the PR — the point
 - [ ] **Step 12: Commit and open the PR**
 
 ```bash
-cd /Users/mateomartinez/development/pq-docker/src/betmaker-bo
+cd /Users/mateomartinez/development/pq-docker/src/betmaker
 git add -A
 git commit -m "PQPL-6496: use status checks from playlogiq-utils
 

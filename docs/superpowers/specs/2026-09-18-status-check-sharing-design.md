@@ -71,7 +71,7 @@ resolves through the container's zero-argument autowiring.
 
 ## Configuration
 
-The config file ships as written in PR #854, with the three changes below.
+The config file ships as written in PR #854, with the four changes below.
 
 ### `checks` ships verbatim
 
@@ -117,6 +117,24 @@ key:
 This mirrors `probeMysqlBackoffice()`, which already reads
 `config('database.bo_connection', 'mysql_bo')`. The default preserves current
 behaviour.
+
+### Keys describing the endpoint are dropped
+
+`StatusCheckService` reads exactly ten config keys: `checks`, `critical`,
+`tcp_probe`, `tcp_timeout`, `queue_lag_warning_seconds`, `queue_count_failed`,
+`disk_free_warning_percent`, `readiness.checks`,
+`readiness.require_authentication` and `readiness.required_config`.
+
+Three keys in PR #854's file are read by nothing: `detail`,
+`min_interval_seconds` and `readiness.min_interval_seconds`. They describe the
+detail level and the snapshot rate limit of the `/status` endpoint — behaviour
+that lives in the route, which this package deliberately does not ship. Keeping
+them would document a feature the package does not implement.
+
+They are dropped from the package config, along with their comment blocks. An
+application that implements the snapshot behaviour in its own route declares
+its own keys for it. `StatusReport::toArray(bool $withDetails)` already takes
+the detail level as an argument, so a route controls it directly.
 
 ### `excluded_integrations` empties out
 

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Reads a comma separated env list, falling back to $default when the variable
- * is unset or empty — an empty STATUS_CHECKS must not silently disable every
+ * is unset or empty — an empty STATUS_READY_CHECKS must not silently disable every
  * check.
  */
 $statusList = static function (string $key, string $default): array {
@@ -183,7 +183,7 @@ return [
         | component here that a project does not run means a permanent 503.
         |
         | Opt in to the rest per application via STATUS_READY_CHECKS:
-        |   database_read   a read replica, named by status.read_connection
+        |   mysql_ro        a read replica, named by its components entry
         |   mongodb         a mongodb connection and the mongodb extension
         |   passport_keys   Laravel Passport OAuth signing keys
         */

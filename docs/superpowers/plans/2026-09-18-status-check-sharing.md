@@ -6,7 +6,7 @@
 
 **Architecture:** Three classes plus a config file move into a new `PlaylogiqUtils\Status` namespace, wired by an auto-discovered service provider that merges a default `config/status.php`. The `/status` probes already skip missing connections, so their defaults ship verbatim; the readiness probes throw on a missing connection, so their default narrows to a universal core and betmaker-bo pins its full set via env. `SecurityHeaders` moves alongside, with its cache-failure guard and without its unreachable CSP code.
 
-**Tech Stack:** PHP 7.4+, Laravel 5.8–9 (`illuminate/support`, `illuminate/database`, `illuminate/http`, `laravel-zero/foundation`), Composer VCS package distribution, Laravel package auto-discovery.
+**Tech Stack:** PHP 7.4+, Laravel 5.8–9 (`illuminate/support`, `illuminate/database`, `illuminate/http`, `illuminate/encryption`, `laravel-zero/foundation`), Composer VCS package distribution, Laravel package auto-discovery.
 
 **Spec:** `docs/superpowers/specs/2026-09-18-status-check-sharing-design.md`
 
@@ -14,7 +14,7 @@
 
 - **PHP floor is `>=7.4`.** No `match`, no nullsafe `?->`, no promoted constructor properties, no `str_starts_with` / `str_contains` / `str_ends_with`, no union types, no enums, no first-class callable syntax. Typed properties, nullable types, `declare(strict_types=1)` and arrow functions are fine.
 - **Laravel floor is `^5.8`**, ceiling `^9.0`. Do not use APIs newer than Laravel 5.8 without a guard.
-- **No new Composer dependencies**, runtime or dev. Everything needed is already in `require`.
+- **One new Composer dependency, and only one:** `illuminate/encryption` (same `^5.8|^6.0|^7.0|^8.0|^9.0` constraint as its siblings). `StatusCheckService::probeAppKey()` calls `Encrypter::supported()` statically and round-trips through the `Crypt` facade, and `illuminate/encryption` is not pulled in transitively by `laravel-zero/foundation` — verified by `class_exists()` against the installed tree. `app_key` is in the default readiness set, so this path runs out of the box. No other dependency may be added, and no dev dependencies.
 - **Namespace root is `PlaylogiqUtils\`**, PSR-4 mapped to `src/`.
 - **No test harness.** The approved scope excludes PHPUnit and Orchestra Testbench. Verification in this plan is `php -l` plus throwaway smoke scripts run from the scratchpad directory and never committed. Where a class is plain PHP with no framework dependency (the two value objects), the smoke script is written first and must fail before the code is in place.
 - **Source of truth for ported code:** `refs/pull/854/head` of `playlogiq/betmaker-bo`. Never retype these files by hand — download them, then apply the edits each task specifies.
@@ -28,7 +28,6 @@ these once per shell before starting any task:
 ```bash
 export SCRATCH=/private/tmp/claude-501/-Users-mateomartinez-development-pq-docker-src-playlogiq-utils/f35c9d30-ac0f-4dce-b9f6-66a93b66d1d8/scratchpad
 export PHP=/opt/homebrew/opt/php@8.4/bin/php
-export COMPOSER="$PHP /usr/local/bin/composer"
 export REPO=/Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
 ```
 
@@ -40,7 +39,9 @@ The user's interactive shell is fish, where that syntax is
 |---|---|---|
 | Syntax check | `"$SCRATCH/plqlint" <file>` | Lints inside the `app` container on **PHP 7.4.33**, the package's declared floor. Host php@8.4 would accept syntax that breaks on 7.4. |
 | Run a script | `$PHP <script>` | Host php@8.4 — the only working host PHP. Needed for anything touching `vendor/autoload.php`. |
-| Composer | `$COMPOSER <cmd>` | Composer 2.10.3 driven by php@8.4. |
+| Composer | `$PHP /usr/local/bin/composer <cmd>` | Composer 2.10.3 driven by php@8.4. |
+
+**Do not define `COMPOSER` as a two-word variable.** `export COMPOSER="$PHP /usr/local/bin/composer"` then `$COMPOSER install` fails with `no such file or directory: /opt/homebrew/opt/php@8.4/bin/php /usr/local/bin/composer` — the whole string is treated as one command name rather than being word-split. Write `$PHP /usr/local/bin/composer …` in full each time. The steps below do.
 
 `plqlint` copies each file into the `app` container, runs `php -l`, filters
 Xdebug noise, prints `OK (php7.4) <path>` or `FAIL (php7.4) <path>` with the
@@ -432,7 +433,7 @@ Expected: nothing, `exit: 1`. The package floor is PHP 7.4.
 
 ```bash
 cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
-$COMPOSER dump-autoload 2>&1 | tail -3
+$PHP /usr/local/bin/composer dump-autoload 2>&1 | tail -3
 $PHP -r 'require "vendor/autoload.php"; $r = new ReflectionClass(PlaylogiqUtils\Status\StatusCheckService::class); echo $r->getName(), "\n"; print_r(PlaylogiqUtils\Status\StatusCheckService::availableChecks()); print_r(PlaylogiqUtils\Status\StatusCheckService::availableReadinessChecks());'
 ```
 
@@ -698,7 +699,7 @@ The double backslashes are required: this is JSON, and `\S` would otherwise be a
 
 ```bash
 cd /Users/mateomartinez/development/pq-docker/src/playlogiq-utils/.worktrees/PQPL-6496-status-checks
-$COMPOSER validate --no-check-publish 2>&1 | tail -5
+$PHP /usr/local/bin/composer validate --no-check-publish 2>&1 | tail -5
 $PHP -r 'require "vendor/autoload.php"; $j = json_decode(file_get_contents("composer.json"), true); $p = $j["extra"]["laravel"]["providers"][0]; echo $p, "\n"; echo class_exists($p) ? "class resolves\n" : "CLASS DOES NOT RESOLVE\n";'
 ```
 

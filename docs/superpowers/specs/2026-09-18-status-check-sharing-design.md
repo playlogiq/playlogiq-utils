@@ -186,8 +186,18 @@ preserved:
 - The only `str_starts_with()` calls in the tree are in `allowListFromHost()`
   and `brandFromFapiHost()`, both of which this spec deletes.
 
-No new runtime dependency is added. `illuminate/support`, `illuminate/database`
-and `illuminate/http` are already required.
+One new runtime dependency is added: `illuminate/encryption`, on the same
+`^5.8|^6.0|^7.0|^8.0|^9.0` constraint as its siblings.
+`StatusCheckService::probeAppKey()` calls `Encrypter::supported()` statically
+and round-trips a string through the `Crypt` facade, and `illuminate/encryption`
+is not pulled in transitively by `laravel-zero/foundation` — confirmed by
+`class_exists()` against the installed tree, where it resolved as MISSING until
+it was required explicitly. Since `app_key` is in the package's default
+readiness set, that code path runs on a default install rather than only in an
+opted-in configuration.
+
+`illuminate/support`, `illuminate/database` and `illuminate/http` are already
+required and cover everything else the service touches.
 
 ## Consumer steps
 

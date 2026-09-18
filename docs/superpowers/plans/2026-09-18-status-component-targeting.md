@@ -372,6 +372,8 @@ The core of the work. Two constants become one, `measure()` learns to pass argum
 
 This is the whole point of the task, and it runs without a database: `resolveComponents()` decides what runs and with which target, and nothing else.
 
+> **Superseded note (added during final review):** the test data below does not run as written. Three assertions pass a sparse `components` array in `'report'` mode and assert an exact `array_keys()` match, which cannot hold — a component absent from config counts as *enabled* (see the "missing config entry defaults enabled" case further down), so it runs too and the keys don't match. The smoke script actually executed adds a `baselineDisabled()` helper that explicitly disables every other report component, and merges it into each of those `'report'`-mode fixtures. Do not treat the block below as literal, working test data.
+
 Create `$SCRATCH/resolve_smoke.php`:
 
 ```php

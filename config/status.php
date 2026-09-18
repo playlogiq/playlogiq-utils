@@ -186,6 +186,12 @@ return [
         |   mysql_ro        a read replica, named by its components entry
         |   mongodb         a mongodb connection and the mongodb extension
         |   passport_keys   Laravel Passport OAuth signing keys
+        |
+        | Naming one of these here is necessary but not sufficient: all three
+        | ship `enabled => false` above, and a disabled component is dropped
+        | before readiness membership is even checked. Also flip its
+        | STATUS_CHECK_* (or `enabled`) flag on in `components`, or it is
+        | silently absent from the readiness set despite being listed here.
         */
         'checks' => $statusList('STATUS_READY_CHECKS', 'mysql,redis,config,app_key,storage'),
 

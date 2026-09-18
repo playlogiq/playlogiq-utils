@@ -115,9 +115,16 @@ it only if you want to edit the file rather than drive it from env:
 php artisan vendor:publish --tag=playlogiq-status-config
 ```
 
-`mergeConfigFrom` merges only the **top level**. If you publish the file and
-delete a key inside `readiness`, that key loses its default rather than
-inheriting it — keep the published file complete.
+`mergeConfigFrom` merges only the **top level**, and it claims the generic
+top-level `status` config key. If an app already has its own unrelated
+`config/status.php`, the package's `components` / `readiness` / `tcp_probe`
+keys are merged into it (an app key wins over the package default at the top
+level, so nothing of the app's is lost, and `vendor:publish` without `--force`
+will not overwrite it) — worth knowing before debugging where those keys came
+from.
+
+If you publish the file and delete a key inside `readiness`, that key loses
+its default rather than inheriting it — keep the published file complete.
 
 ### Configuring components
 
@@ -149,6 +156,9 @@ report *and* excluded from readiness, even if `readiness.checks` names it.
 These ship **disabled**, because most projects do not run them: `mysql_ro`,
 `mysql_bo`, `mongodb`, `redis_others`, `passport_keys`.
 
+`StatusCheckService::availableChecks()` returns all eleven report component
+names in report order, if you need them without hardcoding the list.
+
 ### Two sets of checks
 
 `run()` returns the diagnostic report. Only components marked `critical` can
@@ -171,6 +181,9 @@ declared once.
 Add to the set with `STATUS_READY_CHECKS`. A name that matches no component —
 a typo, or a component with no readiness probe such as `cache` — is reported as
 a failed component and answers 503, rather than silently shrinking the set.
+
+`StatusCheckService::availableReadinessChecks()` returns the eight component
+names that can be part of the readiness set.
 
 > **Upgrading from the previous checks/critical-list config?** Two config
 > indirections went away along with it. `mysql_bo` used to resolve its
@@ -205,10 +218,13 @@ Route::get('checkHttpStatus', function () {
 });
 ```
 
-`toArray(true)` includes per-component details and error text; `toArray(false)`
-gives status, criticality and latency only. Details expose internal topology
-(hosts, ports, versions), so keep them out of a response reachable from the
-public internet — log them instead, as above.
+`toArray(true)` includes per-component `details` and `error` text; `toArray(false)`
+withholds only those two — everything else, including the unconditional `app`
+block (hostname, PHP and Laravel versions, app name, environment and
+maintenance-mode flag) and the `failed`/`warnings` outage lists, is present
+either way. Neither mode is safe to expose publicly: log the report, as above,
+and have the endpoint itself return only a status code and an opaque body —
+exactly what the code example above does.
 
 ### Required: exempt the endpoint from maintenance mode
 

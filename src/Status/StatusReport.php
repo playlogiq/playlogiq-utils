@@ -100,6 +100,10 @@ class StatusReport
             'status' => $this->overallStatus(),
             'app' => $this->app,
             'duration_ms' => round($this->durationMs, 2),
+            // Fixed compatibility fields carried over from the originating
+            // app's payload shape: this package performs no report caching,
+            // so these can never vary. Kept because existing consumers read
+            // them.
             'cached' => false,
             'cache_age_seconds' => 0,
             'failed' => $this->failedComponents(),

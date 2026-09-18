@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PlaylogiqUtils\Middleware;
 
 use Closure;
@@ -10,17 +12,18 @@ class SecurityHeaders
 {
     public function handle(Request $request, Closure $next)
     {
+        $response = $next($request);
+
         // This middleware is global, so a cache outage here would 500 every
         // single request — including the health endpoint, whose whole job is to
         // report that the cache is the component that is down. Fall back to
-        // "flag off".
+        // "flag off". Read after $next() so a request whose response we will
+        // never touch does not pay for a cache round-trip.
         try {
             $flag = (int) Cache::get('ff:csp:report_only', 0);
         } catch (\Throwable $e) {
             $flag = 0;
         }
-
-        $response = $next($request);
 
         if ($flag !== 1) {
             return $response;

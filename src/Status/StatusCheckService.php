@@ -170,6 +170,17 @@ class StatusCheckService
             )->withCritical(true);
         }
 
+        // Every name in the readiness set can be disabled or unknown at once,
+        // in which case the loops above leave nothing behind and an empty
+        // report reads as healthy. An instance that verified nothing must not
+        // tell the load balancer it is ready.
+        if ($components === []) {
+            $components['readiness'] = ComponentStatus::failed(
+                'readiness',
+                'the readiness set resolved to no components — every name in status.readiness.checks is disabled or unknown'
+            )->withCritical(true);
+        }
+
         return new StatusReport($components, $this->appMeta(), (microtime(true) - $startedAt) * 1000);
     }
 

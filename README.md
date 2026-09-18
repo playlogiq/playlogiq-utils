@@ -119,32 +119,70 @@ php artisan vendor:publish --tag=playlogiq-status-config
 delete a key inside `readiness`, that key loses its default rather than
 inheriting it — keep the published file complete.
 
+### Configuring components
+
+`config/status.php` has one `components` block. Each entry says whether this
+project runs the service, which connection or store to probe, and whether its
+failure is fatal:
+
+```php
+'components' => [
+    'mysql' => [
+        'enabled'    => env('STATUS_CHECK_MYSQL', true),
+        'connection' => env('STATUS_CONN_MYSQL', 'mysql'),
+        'critical'   => true,
+    ],
+    'mongodb' => [
+        'enabled'    => env('STATUS_CHECK_MONGODB', false),
+        'connection' => env('STATUS_CONN_MONGODB', 'mongodb'),
+    ],
+],
+```
+
+A project whose Redis connection is called `sessions` sets
+`STATUS_CONN_REDIS=sessions`. A project with no Mongo leaves
+`STATUS_CHECK_MONGODB` off, which is the default.
+
+**`enabled => false` wins everywhere.** A disabled component is absent from the
+report *and* excluded from readiness, even if `readiness.checks` names it.
+
+These ship **disabled**, because most projects do not run them: `mysql_ro`,
+`mysql_bo`, `mongodb`, `redis_others`, `passport_keys`.
+
 ### Two sets of checks
 
-`run()` returns the diagnostic report: eleven components, and only the ones
-named in `status.critical` can make it unhealthy. A component whose connection
-is not configured is reported as `skipped`, which counts as healthy — so the
-default list is safe in a project with no Mongo and no read replica.
+`run()` returns the diagnostic report. Only components marked `critical` can
+make it unhealthy; a component whose connection is not configured is reported
+as `skipped`, which counts as healthy.
 
 `runReadiness()` answers a single question: may this instance take traffic?
-Every component in the set is required, and a readiness probe **fails** rather
-than skips when its connection is absent.
-
-That is why the readiness default is only the components every project has:
+Every member of the set is required, and a readiness probe **fails** rather than
+skips when its connection is absent — which is why the readiness default is
+only the components every project has:
 
 ```
-database, redis, config, app_key, storage
+mysql, redis, config, app_key, storage
 ```
 
-Opt into the rest per project via `STATUS_READY_CHECKS`:
+`config` and `app_key` are self-checks with no target. The rest name components
+from the map above and reuse their connections, so a connection name is
+declared once.
 
-| Name | Needs |
-|---|---|
-| `database_read` | a read replica connection, named by `STATUS_READ_CONNECTION` (default `mysql_ro`) |
-| `mongodb` | a `mongodb` database connection and the `mongodb` PHP extension |
-| `passport_keys` | Laravel Passport OAuth signing keys |
+Add to the set with `STATUS_READY_CHECKS`. A name that matches no component —
+a typo, or a component with no readiness probe such as `cache` — is reported as
+a failed component and answers 503, rather than silently shrinking the set.
 
-Naming a component your project does not run means a permanent 503.
+> **Upgrading from the previous checks/critical-list config?** Two config
+> indirections went away along with it. `mysql_bo` used to resolve its
+> connection through `config('database.bo_connection')`, and the readiness
+> database probe used to read `config('database.default')`; both now fall back
+> to a literal default (`mysql_bo` and `mysql` respectively) when a component
+> has no entry in `status.components`. A project running the current
+> `config/status.php` is unaffected, since every component there already ships
+> an explicit `connection` with an env override. The case that bites is a
+> project still on an **older published config** whose default database
+> connection isn't literally named `mysql` — set `STATUS_CONN_MYSQL` (and
+> `STATUS_CONN_MYSQL_BO` if that check is in use) explicitly.
 
 ### A health endpoint
 
@@ -189,12 +227,39 @@ instance can reach its database.
 
 ### Environment variables
 
+Enable or disable a component:
+
+| Variable | Default |
+|---|---|
+| `STATUS_CHECK_MYSQL` | `true` |
+| `STATUS_CHECK_MYSQL_READ` | `true` |
+| `STATUS_CHECK_MYSQL_RO` | `false` |
+| `STATUS_CHECK_MYSQL_BO` | `false` |
+| `STATUS_CHECK_MONGODB` | `false` |
+| `STATUS_CHECK_REDIS` | `true` |
+| `STATUS_CHECK_REDIS_OTHERS` | `false` |
+| `STATUS_CHECK_CACHE` | `true` |
+| `STATUS_CHECK_QUEUE` | `true` |
+| `STATUS_CHECK_STORAGE` | `true` |
+| `STATUS_CHECK_PASSPORT_KEYS` | `false` |
+
+Point a component at your own connection or store:
+
+| Variable | Default | Targets |
+|---|---|---|
+| `STATUS_CONN_MYSQL` | `mysql` | `mysql` and `mysql_read` |
+| `STATUS_CONN_MYSQL_RO` | `mysql_ro` | `mysql_ro` |
+| `STATUS_CONN_MYSQL_BO` | `mysql_bo` | `mysql_bo` |
+| `STATUS_CONN_MONGODB` | `mongodb` | `mongodb` |
+| `STATUS_CONN_REDIS` | `default` | `redis` |
+| `STATUS_CONN_REDIS_OTHERS` | `others` | `redis_others` |
+| `STATUS_CACHE_STORE` | unset | `cache`; unset follows `cache.default` |
+
+Everything else:
+
 | Variable | Default | Effect |
 |---|---|---|
-| `STATUS_CHECKS` | all eleven | components in the `run()` report |
-| `STATUS_CRITICAL_CHECKS` | `mysql,redis,cache` | which failures make `run()` unhealthy |
-| `STATUS_READY_CHECKS` | `database,redis,config,app_key,storage` | the readiness set |
-| `STATUS_READ_CONNECTION` | `mysql_ro` | replica connection for `mysql_ro` and `database_read` |
+| `STATUS_READY_CHECKS` | `mysql,redis,config,app_key,storage` | the readiness set |
 | `STATUS_READY_REQUIRE_AUTH` | `false` | treat an unauthenticated core component as a readiness failure |
 | `STATUS_TCP_PROBE` | `true` | TCP pre-flight before each driver call |
 | `STATUS_TCP_TIMEOUT` | `2.0` | pre-flight timeout, seconds |

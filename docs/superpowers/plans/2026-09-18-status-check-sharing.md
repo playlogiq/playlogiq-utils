@@ -1160,7 +1160,7 @@ $BM 'cd /opt/app/betmaker && php artisan package:discover && php artisan config:
 $BM 'cd /opt/app/betmaker && php artisan tinker --execute=\'dump(config("status.readiness.checks"));\''
 ```
 
-Expected: `package:discover` lists `playlogiq/playlogiq-utils`, and the dump shows the package default `['database','redis','config','app_key','storage']`. betmaker-bo's own `config/status.php` from PR #854 is still on disk and takes precedence over the merge, so if the dump shows the eight-name list instead, that is expected at this point — Step 5 reconciles it.
+Expected: `package:discover` lists `playlogiq/playlogiq-utils`, and the dump shows the package default `['mysql','redis','config','app_key','storage']`. betmaker-bo's own `config/status.php` from PR #854 is still on disk and takes precedence over the merge, so if the dump shows the eight-name list instead, that is expected at this point — Step 5 reconciles it.
 
 - [ ] **Step 3: Pin the readiness set before deleting anything**
 
@@ -1169,9 +1169,16 @@ This preserves PR #854's reviewed behaviour exactly. Do it first, so no window e
 Add to `.env` and `.env.example`:
 
 ```
-STATUS_READY_CHECKS=database,database_read,redis,mongodb,config,app_key,storage,passport_keys
-STATUS_READ_CONNECTION=mysql_ro
+STATUS_CHECK_MYSQL_RO=true
+STATUS_CHECK_MYSQL_BO=true
+STATUS_CHECK_MONGODB=true
+STATUS_CHECK_REDIS_OTHERS=true
+STATUS_CHECK_PASSPORT_KEYS=true
+
+STATUS_READY_CHECKS=mysql,mysql_ro,redis,mongodb,config,app_key,storage,passport_keys
 ```
+
+This reproduces PR #854's behaviour exactly: all eleven components in the report, the same eight in the readiness set, the same connections. `STATUS_CONN_*` are all left at their defaults because betmaker-bo's connection names already match them.
 
 - [ ] **Step 4: Delete the four app files**
 
@@ -1233,6 +1240,8 @@ grep -rn "App\\\\ValueObjects\\\\Status\|App\\\\Services\\\\Status" tests/
 ```
 
 In each hit, change the `use` statements to `PlaylogiqUtils\Status\ComponentStatus`, `PlaylogiqUtils\Status\StatusReport` and `PlaylogiqUtils\Status\StatusCheckService`. The tests keep their current file paths and class names — moving them is not part of this work.
+
+> `CheckHttpStatusTest` also asserts on readiness component names. Two changed: `database` is now `mysql` and `database_read` is now `mysql_ro`. Update those assertions, and warn the team that the readiness log payload's `components.database` / `components.database_read` keys changed with them — any log query or dashboard matching those names needs the same edit.
 
 - [ ] **Step 9: Verify nothing still points at the old namespaces**
 

@@ -24,40 +24,51 @@ use Throwable;
 class StatusCheckService
 {
     /**
-     * Component name => probe method, in report order.
+     * Every component, in report order.
+     *
+     * `probe`  the method that probes it for GET /status; absent means the
+     *          component is readiness-only (the config and APP_KEY self-checks).
+     * `ready`  the method that probes it for readiness; absent means the
+     *          component cannot be part of the readiness set. Readiness uses a
+     *          stricter variant where one exists: it authenticates, and it
+     *          fails rather than skips when the connection is missing, because
+     *          readiness answers "may this instance take traffic?".
+     * `target` which config key holds the component's target — `connection`
+     *          for databases and Redis, `store` for the cache, absent for the
+     *          components that have no target.
+     * `read`   probe the read host of a read/write split connection.
+     * `role`   the label probeAuthenticatedDatabase() reports.
      */
-    private const CHECKS = [
-        'mysql' => 'probeMysqlWrite',
-        'mysql_read' => 'probeMysqlRead',
-        'mysql_ro' => 'probeMysqlReadOnlyConnection',
-        'mysql_bo' => 'probeMysqlBackoffice',
-        'mongodb' => 'probeMongodb',
-        'redis' => 'probeRedisDefault',
-        'redis_others' => 'probeRedisOthers',
-        'cache' => 'probeCache',
-        'queue' => 'probeQueue',
-        'storage' => 'probeStorage',
-        'passport_keys' => 'probePassportKeys',
+    private const COMPONENTS = [
+        'mysql' => ['probe' => 'probeMysql', 'ready' => 'probeAuthenticatedDatabase', 'target' => 'connection', 'role' => 'primary'],
+        'mysql_read' => ['probe' => 'probeMysql', 'target' => 'connection', 'read' => true],
+        'mysql_ro' => ['probe' => 'probeMysql', 'ready' => 'probeAuthenticatedDatabase', 'target' => 'connection', 'read' => true, 'role' => 'read replica'],
+        'mysql_bo' => ['probe' => 'probeMysql', 'target' => 'connection'],
+        'mongodb' => ['probe' => 'probeMongodb', 'ready' => 'probeReadinessMongodb', 'target' => 'connection'],
+        'redis' => ['probe' => 'probeRedis', 'ready' => 'probeReadinessRedis', 'target' => 'connection'],
+        'redis_others' => ['probe' => 'probeRedis', 'target' => 'connection'],
+        'cache' => ['probe' => 'probeCache', 'target' => 'store'],
+        'queue' => ['probe' => 'probeQueue'],
+        'storage' => ['probe' => 'probeStorage', 'ready' => 'probeStorage'],
+        'passport_keys' => ['probe' => 'probePassportKeys', 'ready' => 'probePassportKeys'],
+        'config' => ['ready' => 'probeConfig'],
+        'app_key' => ['ready' => 'probeAppKey'],
     ];
 
     /**
-     * The readiness set: component name => probe method.
-     *
-     * Every one of these is required — there is no critical/non-critical split,
-     * because readiness answers a single question ("may this instance receive
-     * traffic?") and any of these being down means it cannot serve a player
-     * request. Third-party integrations are deliberately absent; see
-     * config/status.php `readiness.excluded_integrations`.
+     * Default target per component, used when the config has no entry for it.
+     * Keeps a project that publishes an older config file working rather than
+     * silently dropping checks.
      */
-    private const READINESS_CHECKS = [
-        'database' => 'probeReadinessDatabase',
-        'database_read' => 'probeReadinessDatabaseRead',
-        'redis' => 'probeReadinessRedis',
-        'mongodb' => 'probeReadinessMongodb',
-        'config' => 'probeConfig',
-        'app_key' => 'probeAppKey',
-        'storage' => 'probeStorage',
-        'passport_keys' => 'probePassportKeys',
+    private const DEFAULT_TARGETS = [
+        'mysql' => 'mysql',
+        'mysql_read' => 'mysql',
+        'mysql_ro' => 'mysql_ro',
+        'mysql_bo' => 'mysql_bo',
+        'mongodb' => 'mongodb',
+        'redis' => 'default',
+        'redis_others' => 'others',
+        'cache' => null,
     ];
 
     /**
@@ -87,11 +98,35 @@ class StatusCheckService
     ];
 
     /**
-     * @return string[] every component name the endpoint knows how to probe
+     * @return string[] every component name the report knows how to probe
      */
     public static function availableChecks(): array
     {
-        return array_keys(self::CHECKS);
+        $names = [];
+
+        foreach (self::COMPONENTS as $name => $meta) {
+            if (isset($meta['probe'])) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * @return string[] every component name the readiness set can contain
+     */
+    public static function availableReadinessChecks(): array
+    {
+        $names = [];
+
+        foreach (self::COMPONENTS as $name => $meta) {
+            if (isset($meta['ready'])) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
     }
 
     /**
@@ -99,34 +134,19 @@ class StatusCheckService
      */
     public function run(array $only = []): StatusReport
     {
-        $enabled = (array) config('status.checks', self::availableChecks());
-        $critical = (array) config('status.critical', []);
-
         $startedAt = microtime(true);
         $components = [];
 
-        foreach (self::CHECKS as $name => $probe) {
-            if (! in_array($name, $enabled, true)) {
-                continue;
-            }
-
+        foreach ($this->resolveComponents('report') as $name => $plan) {
             if ($only !== [] && ! in_array($name, $only, true)) {
                 continue;
             }
 
-            $components[$name] = $this->measure($name, $probe)
-                ->withCritical(in_array($name, $critical, true));
+            $components[$name] = $this->measure($name, $plan['probe'], $plan['args'])
+                ->withCritical($plan['critical']);
         }
 
         return new StatusReport($components, $this->appMeta(), (microtime(true) - $startedAt) * 1000);
-    }
-
-    /**
-     * @return string[] every component name the readiness endpoint can probe
-     */
-    public static function availableReadinessChecks(): array
-    {
-        return array_keys(self::READINESS_CHECKS);
     }
 
     /**
@@ -135,31 +155,99 @@ class StatusCheckService
      */
     public function runReadiness(): StatusReport
     {
-        $enabled = (array) config('status.readiness.checks', self::availableReadinessChecks());
-
         $startedAt = microtime(true);
         $components = [];
 
-        foreach (self::READINESS_CHECKS as $name => $probe) {
-            if (! in_array($name, $enabled, true)) {
-                continue;
-            }
-
-            $components[$name] = $this->measure($name, $probe)->withCritical(true);
+        foreach ($this->resolveComponents('readiness') as $name => $plan) {
+            $components[$name] = $this->measure($name, $plan['probe'], $plan['args'])
+                ->withCritical(true);
         }
 
         return new StatusReport($components, $this->appMeta(), (microtime(true) - $startedAt) * 1000);
     }
 
     /**
+     * Decides which components run and with which arguments.
+     *
+     * @param string $set 'report' or 'readiness'
+     * @return array<string, array{probe: string, args: array, critical: bool}>
+     */
+    private function resolveComponents(string $set): array
+    {
+        $configured = (array) config('status.components', []);
+        $readinessSet = (array) config('status.readiness.checks', self::availableReadinessChecks());
+        $readiness = $set === 'readiness';
+        $resolved = [];
+
+        foreach (self::COMPONENTS as $name => $meta) {
+            $probe = $readiness ? ($meta['ready'] ?? null) : ($meta['probe'] ?? null);
+
+            if ($probe === null) {
+                continue;
+            }
+
+            $entry = (array) ($configured[$name] ?? []);
+
+            // A component absent from config counts as enabled: a published
+            // config file predating a new component should gain it, not lose it.
+            if (! (bool) ($entry['enabled'] ?? true)) {
+                continue;
+            }
+
+            if ($readiness && ! in_array($name, $readinessSet, true)) {
+                continue;
+            }
+
+            $resolved[$name] = [
+                'probe' => $probe,
+                'args' => $this->probeArguments($name, $meta, $entry, $readiness),
+                'critical' => $readiness ? true : (bool) ($entry['critical'] ?? false),
+            ];
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * Builds the positional argument list for a component's probe.
+     *
+     * @param array<string, mixed> $meta  the COMPONENTS entry
+     * @param array<string, mixed> $entry the config entry
+     */
+    private function probeArguments(string $name, array $meta, array $entry, bool $readiness): array
+    {
+        $target = $meta['target'] ?? null;
+
+        if ($target === null) {
+            return [];
+        }
+
+        $value = array_key_exists($target, $entry)
+            ? $entry[$target]
+            : (self::DEFAULT_TARGETS[$name] ?? null);
+
+        if ($target === 'store') {
+            return [$value];
+        }
+
+        $args = [(string) $value, (bool) ($meta['read'] ?? false)];
+
+        if ($readiness && isset($meta['role'])) {
+            $args[] = $meta['role'];
+        }
+
+        return $args;
+    }
+
+    /**
      * Runs a probe, times it, and normalises both its result and any throw.
      */
-    private function measure(string $name, string $probe): ComponentStatus
+    private function measure(string $name, string $probe, array $args = []): ComponentStatus
     {
         $startedAt = microtime(true);
 
         try {
-            $result = $this->{$probe}();
+            $result = $this->{$probe}(...$args);
             $latency = $this->elapsedMs($startedAt);
             $status = $result['status'] ?? ComponentStatus::OK;
             $details = $result['details'] ?? [];
@@ -187,26 +275,6 @@ class StatusCheckService
     // -----------------------------------------------------------------
     // MySQL
     // -----------------------------------------------------------------
-
-    private function probeMysqlWrite(): array
-    {
-        return $this->probeMysql('mysql', false);
-    }
-
-    private function probeMysqlRead(): array
-    {
-        return $this->probeMysql('mysql', true);
-    }
-
-    private function probeMysqlReadOnlyConnection(): array
-    {
-        return $this->probeMysql((string) config('status.read_connection', 'mysql_ro'), true);
-    }
-
-    private function probeMysqlBackoffice(): array
-    {
-        return $this->probeMysql(config('database.bo_connection', 'mysql_bo'), false);
-    }
 
     /**
      * @param bool $useReadPdo probe the read host of a read/write split connection
@@ -271,12 +339,12 @@ class StatusCheckService
     // MongoDB
     // -----------------------------------------------------------------
 
-    private function probeMongodb(): array
+    private function probeMongodb(string $connection): array
     {
-        $config = (array) config('database.connections.mongodb');
+        $config = (array) config('database.connections.' . $connection);
 
         if ($config === []) {
-            return ['status' => ComponentStatus::SKIPPED, 'error' => 'connection [mongodb] is not configured'];
+            return ['status' => ComponentStatus::SKIPPED, 'error' => "connection [{$connection}] is not configured"];
         }
 
         if (! extension_loaded('mongodb')) {
@@ -289,7 +357,7 @@ class StatusCheckService
         $this->assertReachable($host, $port);
 
         /** @var \Jenssegers\Mongodb\Connection $mongo */
-        $mongo = DB::connection('mongodb');
+        $mongo = DB::connection($connection);
 
         $result = $mongo->getMongoClient()
             ->selectDatabase($database)
@@ -342,16 +410,6 @@ class StatusCheckService
     // -----------------------------------------------------------------
     // Redis
     // -----------------------------------------------------------------
-
-    private function probeRedisDefault(): array
-    {
-        return $this->probeRedis('default');
-    }
-
-    private function probeRedisOthers(): array
-    {
-        return $this->probeRedis('others');
-    }
 
     /**
      * A keyed SETEX/GET/DEL round-trip rather than PING: it works the same in
@@ -642,23 +700,6 @@ class StatusCheckService
     // report how authentication was proven so the answer is auditable.
     // -----------------------------------------------------------------
 
-    private function probeReadinessDatabase(): array
-    {
-        return $this->probeAuthenticatedDatabase(config('database.default', 'mysql'), false, 'primary');
-    }
-
-    private function probeReadinessDatabaseRead(): array
-    {
-        // Applications whose models read through a replica cannot serve traffic
-        // when that replica is unreachable, even though the writer is fine.
-        // Which connection that is comes from status.read_connection.
-        return $this->probeAuthenticatedDatabase(
-            (string) config('status.read_connection', 'mysql_ro'),
-            true,
-            'read replica'
-        );
-    }
-
     /**
      * MySQL authenticates during connect: a PDO handed back at all means the
      * credentials were accepted. The query then proves the session is usable
@@ -706,12 +747,12 @@ class StatusCheckService
      * unless AUTH succeeded — so a completed write/read round-trip is itself
      * the proof of authentication.
      */
-    private function probeReadinessRedis(): array
+    private function probeReadinessRedis(string $connection): array
     {
-        $seeds = $this->redisSeeds('default');
+        $seeds = $this->redisSeeds($connection);
 
         if ($seeds === []) {
-            throw new RuntimeException('redis connection [default] is not configured');
+            throw new RuntimeException("redis connection [{$connection}] is not configured");
         }
 
         $first = $seeds[0];
@@ -720,7 +761,7 @@ class StatusCheckService
         $key = 'status:ready:' . Str::random(16);
         $value = (string) microtime(true);
 
-        $redis = Redis::connection('default');
+        $redis = Redis::connection($connection);
         $redis->setex($key, 10, $value);
         $readBack = $redis->get($key);
         $redis->del($key);
@@ -732,7 +773,7 @@ class StatusCheckService
         $hasPassword = ! blank($first['password'] ?? null);
 
         return $this->withAuthenticationVerdict([
-            'connection' => 'default',
+            'connection' => $connection,
             'client' => config('database.redis.client'),
             'nodes' => array_map(static function (array $seed): string {
                 return ($seed['host'] ?? '?') . ':' . ($seed['port'] ?? '?');
@@ -747,12 +788,12 @@ class StatusCheckService
      * authenticated as, and listCollections then requires real authorisation on
      * the target database.
      */
-    private function probeReadinessMongodb(): array
+    private function probeReadinessMongodb(string $connection): array
     {
-        $config = (array) config('database.connections.mongodb');
+        $config = (array) config('database.connections.' . $connection);
 
         if ($config === []) {
-            throw new RuntimeException('connection [mongodb] is not configured');
+            throw new RuntimeException("connection [{$connection}] is not configured");
         }
 
         if (! extension_loaded('mongodb')) {
@@ -765,7 +806,7 @@ class StatusCheckService
         $this->assertReachable($host, $port);
 
         /** @var \Jenssegers\Mongodb\Connection $mongo */
-        $mongo = DB::connection('mongodb');
+        $mongo = DB::connection($connection);
         $selected = $mongo->getMongoClient()->selectDatabase($database);
 
         $status = $selected->command(['connectionStatus' => 1])->toArray();

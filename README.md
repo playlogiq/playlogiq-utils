@@ -226,6 +226,42 @@ either way. Neither mode is safe to expose publicly: log the report, as above,
 and have the endpoint itself return only a status code and an opaque body —
 exactly what the code example above does.
 
+### In Lumen
+
+Lumen does not auto-discover package providers, so `StatusServiceProvider`
+never runs and its default config is never merged. Ship the application's own
+`config/status.php` instead, naming every component explicitly — a component
+absent from the array counts as **enabled** — and let Lumen load it
+(`$app->configure('status')`, or the `scandir(config/)` loop some of our apps
+have in `bootstrap/app.php`). `StatusCheckService` has a zero-argument
+constructor, so `app(StatusCheckService::class)` resolves without a provider.
+
+Do not register `StatusServiceProvider` by hand: its `boot()` calls
+`$this->app->configPath()`, which Lumen's application does not have, and that
+fatals in console.
+
+Keep the readiness set to the components Lumen actually has. The `config`
+self-check's default `required_config` includes `session.driver`, which Lumen
+does not configure; `app_key` and `storage` likewise assume a full Laravel app.
+
+The jobs (`PlaylogiqUtils\Jobs\BaseJob` and its subclasses) are the one part of
+this package that needs `illuminate/foundation`, and in Lumen that dependency
+is actively harmful: the `laravel-zero/foundation` mirror's `helpers.php` is
+autoloaded before Lumen's, so Laravel's `storage_path()` and `response()` win
+and then fail on bindings Lumen never makes (`path.storage`, the
+`ResponseFactory` contract) — every request 500s, whether or not it touches
+this package. It is therefore a `suggest`, not a `require`. A Lumen app that
+wants the jobs must require the mirror itself and bind those in
+`bootstrap/app.php`:
+
+```php
+$app->useStoragePath($app->basePath('storage'));
+
+$app->singleton(Illuminate\Contracts\Routing\ResponseFactory::class, function () {
+    return new Laravel\Lumen\Http\ResponseFactory();
+});
+```
+
 ### Required: exempt the endpoint from maintenance mode
 
 Add the route to your own `app/Http/Middleware/PreventRequestsDuringMaintenance.php`:

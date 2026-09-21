@@ -23,13 +23,15 @@
     "php": ">=7.4",
     "illuminate/bus": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "illuminate/contracts": "^5.8|^6.0|^7.0|^8.0|^9.0",
-    "laravel-zero/foundation": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "illuminate/database": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "illuminate/encryption": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "illuminate/http": "^5.8|^6.0|^7.0|^8.37|^9.0",
     "illuminate/queue": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "illuminate/support": "^5.8|^6.0|^7.0|^8.0|^9.0",
     "nesbot/carbon": "^2.0|^3.0"
+  },
+  "suggest": {
+    "laravel-zero/foundation": "Required only by PlaylogiqUtils\\Jobs\\BaseJob and its subclasses, for Illuminate\\Foundation\\Bus\\Dispatchable. A Laravel application already has illuminate/foundation through laravel/framework and needs nothing extra. It is deliberately NOT a hard requirement: in Lumen, that mirror's helpers.php is autoloaded before Lumen's own, so Laravel's storage_path() and response() win and then fail on container bindings Lumen never makes (path.storage, the ResponseFactory contract) — which breaks the host application on every request. A Lumen app that wants the jobs must require it itself and bind those."
   },
   "extra": {
     "laravel": {

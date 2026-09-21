@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PlaylogiqUtils\Status;
 
 use Illuminate\Encryption\Encrypter;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -1058,7 +1059,9 @@ class StatusCheckService
             'laravel_version' => app()->version(),
             'hostname' => gethostname() ?: null,
             'maintenance_mode' => app()->isDownForMaintenance(),
-            'timestamp' => now()->toIso8601String(),
+            // Carbon::now() rather than now(): that helper is Laravel's, from
+            // illuminate/foundation, and Lumen does not define it.
+            'timestamp' => Carbon::now()->toIso8601String(),
         ];
     }
 

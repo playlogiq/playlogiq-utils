@@ -36,7 +36,8 @@
   "extra": {
     "laravel": {
       "providers": [
-        "PlaylogiqUtils\\Status\\StatusServiceProvider"
+        "PlaylogiqUtils\\Status\\StatusServiceProvider",
+        "PlaylogiqUtils\\Support\\BuildInfoServiceProvider"
       ]
     }
   }

@@ -325,3 +325,89 @@ Everything else:
 CSP and framing headers from HTML responses when the `ff:csp:report_only` cache
 flag is set. It swallows a cache failure and falls back to "flag off", so a
 Redis outage cannot 500 every request — including the health endpoint.
+
+---
+
+## 🔖 Build identity
+
+`PlaylogiqUtils\Support\BuildInfo` answers *which commit is this?* without ever
+touching the checkout — no `.git` reads, no `git` subprocess (which does not
+survive php-fpm anyway: the web user does not own the checkout and git refuses
+it with "dubious ownership").
+
+The single source is a `build-info.txt` in the **application** root, whose
+`$Format:...$` placeholders git expands at `git archive` time:
+
+```
+commit=$Format:%H$
+short=$Format:%h$
+date=$Format:%cI$
+ref=$Format:%D$
+```
+
+with `build-info.txt export-subst` in that application's `.gitattributes`. Both
+files belong to the application, not to this package — only the artifact build
+can expand them. In a plain checkout the literals survive untouched, are
+ignored, and everything reports `unknown`, which is the correct answer for a
+working copy: it has no build to identify. `ref` is usually `unknown` even in a
+real artifact, because a pipeline checkout is detached and `git archive` leaves
+`%D` empty for a detached HEAD.
+
+A `commit` that is not a SHA means the file was tampered with or half-expanded;
+the whole file is then discarded rather than reporting a plausible lie.
+
+### Config
+
+`BuildInfoServiceProvider` is auto-discovered and merges `app.build` and
+`app.version` into the **`app`** config key, so nothing needs to be pasted into
+the framework-owned `config/app.php`:
+
+```php
+config('app.build.commit');   // full SHA, or 'unknown'
+config('app.build.short');    // '1a008ece8b'
+config('app.build.date');     // ISO-8601 commit date
+config('app.build.ref');      // branch/tag, usually 'unknown'
+config('app.build.version');  // '1a008ece8b (2026-09-28)'
+config('app.version');        // APP_VERSION, e.g. '2.14.0'
+```
+
+`app.build` is *derived* — the commit actually running. `app.version` is
+*declared* (`APP_VERSION`) — the release as people talk about it. One says
+nothing about the other, which is why both exist rather than one standing in
+for the other.
+
+Being a `mergeConfigFrom`, an application that defines its own `app.build` or
+`app.version` in `config/app.php` wins over these defaults.
+
+**`config:cache` bakes the values in**, and that is the intended behaviour: the
+merge is skipped on a cached boot, but `config:cache` resolves it first, so an
+artifact that caches config during its build freezes the identity of the commit
+it was built from. Re-run `config:cache` on deploy, not before the artifact is
+assembled.
+
+`BuildInfo` is safe to call from config files: it resolves once per process,
+holds no container dependency, and derives the application root from Composer's
+autoloader rather than `base_path()` — which is a defined function that still
+fatals while `config/app.php` is being loaded, before the container instance is
+bound.
+
+### Direct use
+
+```php
+use PlaylogiqUtils\Support\BuildInfo;
+
+BuildInfo::version();   // '1a008ece8b (2026-09-28)' or 'unknown'
+BuildInfo::isKnown();   // false in a working copy
+BuildInfo::all();       // all four values
+```
+
+`BuildInfo::useBasePath($path)` points the lookup at an explicit root (tests, or
+an application whose root is not the Composer root); `useBasePath(null)`
+restores autodetection. Both it and `flush()` drop the memoised values.
+
+### In Lumen
+
+Lumen does not auto-discover package providers, so the merge never happens.
+Either register `BuildInfoServiceProvider` by hand (it binds nothing and has no
+`boot()`, so unlike `StatusServiceProvider` it is safe there), or call
+`BuildInfo` directly from the application's own config.

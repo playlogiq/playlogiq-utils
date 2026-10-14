@@ -411,3 +411,22 @@ Lumen does not auto-discover package providers, so the merge never happens.
 Either register `BuildInfoServiceProvider` by hand (it binds nothing and has no
 `boot()`, so unlike `StatusServiceProvider` it is safe there), or call
 `BuildInfo` directly from the application's own config.
+
+
+🔑 Crypto: APP_KEY rotation key ring
+
+`PlaylogiqUtils\Crypto` holds the key-ring primitives shared by Betmaker and
+Backoffice. The host application keeps its own `config/keyring.php`, binds the
+ring and the `encrypter` in its `AppServiceProvider`, and owns its
+`secrets:rotate` / `secrets:rotate-status` commands.
+
+- `AppKeyRing(currentKey, currentKid = null, oldKeys = '', oldKeysVar = 'APP_KEYS_OLD', defaultKid = 'app', decodeBase64 = true)`
+  parses `KEY`, `KEY_ID` and `KEYS_OLD` ("id:key,id:key"). `decodeBase64 = false`
+  keeps `base64:...` keys exactly as written (for keys that are hashed as a
+  password rather than used as AES material).
+- `KeyRingEntry` exposes `kid()`, `raw()` (decoded bytes) and `literal()` (as configured).
+- `RingEncrypter` is the framework `Encrypter` widened to decrypt under every ring key.
+- `KeyRingSignature` signs with the current key and verifies against the whole ring.
+- `CompactCrypt` is compact AES-256-GCM for short secrets (`c1:`/`c2:<kid>:` payloads);
+  it resolves `AppKeyRing` from the container.
+- `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.

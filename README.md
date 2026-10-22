@@ -430,3 +430,45 @@ ring and the `encrypter` in its `AppServiceProvider`, and owns its
 - `CompactCrypt` is compact AES-256-GCM for short secrets (`c1:`/`c2:<kid>:` payloads);
   it resolves `AppKeyRing` from the container.
 - `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.
+
+
+## 🛡️ Integrity checks (GLI-33)
+
+`PlaylogiqUtils\Integrity` holds the GLI-33 integrity checks, moved from Betmaker
+(PQPL-5432) so every application runs the same logic:
+
+- **App integrity**: the signed manifest of the control program
+  (`integrity:baseline`, `integrity:sign`, `integrity:verify`), the per-host
+  `Jobs\VerifyControlProgram` and the fleet-wide `Jobs\DispatchFleetIntegrityCheck`.
+- **Settings integrity**: `CriticalSettingsGuard` around every save of the
+  certified settings, the write-once snapshot store, `integrity:settings-snapshot`
+  and the daily `Jobs\RunScheduledSettingsIntegrityChecks`.
+
+`IntegrityServiceProvider` is auto-discovered. It registers the `integrity:*`
+commands and binds a log-only `Contracts\SignificantEvents` unless the application
+binds its own.
+
+### What stays in the application
+
+- `config/critical_components.php` (the inventory) and `config/integrity.php`
+  (`store`, plus `models.user` and `models.skin` for the `creator()`/`skin()`
+  relations; `models.user` falls back to the default auth provider's model).
+- The migrations for `app_integrity_checks`, `app_integrity_check_instances` and
+  `settings_integrity_checks`.
+- A `Contracts\CriticalSettingsReader` binding, if it uses the settings check:
+  which tables hold the settings is the application's business.
+- Authorisation, controllers, views, the schedule, the PEM keys, the manifest, CI
+  and the deploy gate.
+
+The inventory must cover `vendor/playlogiq/playlogiq-utils/src/Integrity`, so a
+change to the checks is a manifest mismatch like any other. The inventory refuses
+symlinks, so a Composer `path` repository needs `"options": {"symlink": false}`.
+
+### Extending
+
+- **The drift refusal**: the guard resolves `Exceptions\CriticalSettingsDriftException`
+  through the container with `settings` and `global` parameters. Bind a subclass
+  to word the message and render it your own way.
+- **The jobs**: extend them to keep your own class names in queue payloads, unique
+  locks and job ids. Their state is `protected` so it survives `SerializesModels`
+  in a subclass (`JobSubclassSerializationTest` pins this).

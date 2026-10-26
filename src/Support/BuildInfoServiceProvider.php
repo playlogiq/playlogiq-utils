@@ -7,7 +7,7 @@ namespace PlaylogiqUtils\Support;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Merges `app.build` and `app.version` into the application's config.
+ * Merges `app.build`, `app.manifest` and `app.version` into the application's config.
  *
  * Auto-discovered via composer.json's extra.laravel.providers, so an installed
  * application gets config('app.build.version') without editing config/app.php —

@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace PlaylogiqUtils\Support;
 
-use Composer\Autoload\ClassLoader;
-use ReflectionClass;
-
 /**
  * Build identity (git commit) of the running code.
  *
@@ -218,13 +215,7 @@ final class BuildInfo
     }
 
     /**
-     * Root of the consuming application.
-     *
-     * Composer's autoloader lives at <root>/vendor/composer/ClassLoader.php, so
-     * its own file locates the root whether this package is installed into
-     * vendor/ or symlinked there from a path repository. When Composer is not
-     * in play at all (a bare include of this file), fall back to the package
-     * root, which is the right answer when this package *is* the checkout.
+     * Root of the consuming application; see ApplicationRoot.
      */
     private static function basePath(string $path = ''): string
     {
@@ -239,15 +230,6 @@ final class BuildInfo
 
     private static function detectBasePath(): string
     {
-        if (class_exists(ClassLoader::class, false)) {
-            $file = (new ReflectionClass(ClassLoader::class))->getFileName();
-
-            if (is_string($file) && $file !== '') {
-                // …/vendor/composer/ClassLoader.php → …/vendor → the root.
-                return dirname($file, 3);
-            }
-        }
-
-        return dirname(__DIR__, 2);
+        return ApplicationRoot::detect();
     }
 }

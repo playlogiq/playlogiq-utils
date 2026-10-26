@@ -328,6 +328,7 @@ Redis outage cannot 500 every request — including the health endpoint.
 
 ---
 
+
 ## 🔖 Build identity
 
 `PlaylogiqUtils\Support\BuildInfo` answers *which commit is this?* without ever
@@ -430,3 +431,36 @@ ring and the `encrypter` in its `AppServiceProvider`, and owns its
 - `CompactCrypt` is compact AES-256-GCM for short secrets (`c1:`/`c2:<kid>:` payloads);
   it resolves `AppKeyRing` from the container.
 - `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.
+
+## 🧾 Integrity manifest identity
+
+`PlaylogiqUtils\Support\ManifestInfo` is the counterpart of `BuildInfo` for
+the GLI integrity manifest: it reads `integrity-manifest.json` in the
+**application** root and reports the versions it declares, never verifying
+anything (the application's own verifier does that).
+
+```php
+use PlaylogiqUtils\Support\ManifestInfo;
+
+ManifestInfo::release();    // '1.0.0'  — control-program ("app core") version, release_version
+ManifestInfo::inventory();  // '1.22.0' — critical-components scope, inventory_version
+ManifestInfo::date();       // '2026-10-16' — last write of the manifest file
+ManifestInfo::version();    // '1.22.0 (2026-10-16)'
+ManifestInfo::isKnown();    // false when there is no readable manifest
+ManifestInfo::all();        // all of the above
+```
+
+A checkout, or an application that has no manifest yet, reports `none` for
+everything. `BuildInfoServiceProvider` merges the same values under
+`config('app.manifest.{release,inventory,date,version}')`, with the same
+`config:cache` behaviour as `app.build`. `useBasePath()` and `flush()` work as
+they do on `BuildInfo`.
+
+Typical footer, shared across projects:
+
+```blade
+BUILD_VERSION: {{ config('app.build.version') }}
+CORE_VERSION: {{ config('app.manifest.release') }}
+MANIFEST_VERSION: {{ config('app.manifest.version') }}
+```
+

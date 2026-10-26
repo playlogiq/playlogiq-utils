@@ -328,6 +328,7 @@ Redis outage cannot 500 every request — including the health endpoint.
 
 ---
 
+
 ## 🔖 Build identity
 
 `PlaylogiqUtils\Support\BuildInfo` answers *which commit is this?* without ever
@@ -431,7 +432,6 @@ ring and the `encrypter` in its `AppServiceProvider`, and owns its
   it resolves `AppKeyRing` from the container.
 - `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.
 
-
 ## 🛡️ Integrity checks (GLI-33)
 
 `PlaylogiqUtils\Integrity` holds the GLI-33 integrity checks, moved from Betmaker
@@ -472,3 +472,40 @@ symlinks, so a Composer `path` repository needs `"options": {"symlink": false}`.
 - **The jobs**: extend them to keep your own class names in queue payloads, unique
   locks and job ids. Their state is `protected` so it survives `SerializesModels`
   in a subclass (`JobSubclassSerializationTest` pins this).
+
+## 🧾 Integrity manifest identity
+
+`PlaylogiqUtils\Support\ManifestInfo` is the counterpart of `BuildInfo` for
+the GLI integrity manifest: it reads `integrity-manifest.json` in the
+**application** root and reports the versions it declares, never verifying
+anything (the application's own verifier does that).
+
+```php
+use PlaylogiqUtils\Support\ManifestInfo;
+
+ManifestInfo::release();    // '1.0.0'  — control-program ("app core") version, release_version
+ManifestInfo::inventory();  // '1.22.0' — critical-components scope, inventory_version
+ManifestInfo::date();       // '2026-10-16' — last write of the manifest file
+ManifestInfo::version();    // '1.22.0 (2026-10-16)'
+ManifestInfo::isKnown();    // false when there is no readable manifest
+ManifestInfo::all();        // all of the above
+```
+
+A checkout, or an application that has no manifest yet, reports `none` for
+everything. `BuildInfoServiceProvider` merges the same values under
+`config('app.manifest.{release,inventory,date,version}')`, with the same
+`config:cache` behaviour as `app.build`. `useBasePath()` and `flush()` work as
+they do on `BuildInfo`.
+
+Typical footer, shared across projects:
+
+```blade
+@if (PlaylogiqUtils\Support\ManifestInfo::isKnown())
+    CORE_VERSION: {{ PlaylogiqUtils\Support\ManifestInfo::release() }}
+    MANIFEST_VERSION: {{ PlaylogiqUtils\Support\ManifestInfo::version() }}
+@endif
+```
+
+`config('app.manifest.*')` exists for the same reason as `app.build`, but it is
+frozen by `config:cache` (an artifact cached before its manifest existed bakes
+`none`), so views should call the class.

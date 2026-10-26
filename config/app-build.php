@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PlaylogiqUtils\Support\BuildInfo;
+use PlaylogiqUtils\Support\ManifestInfo;
 
 /**
  * Merged into the application's `app` config key by BuildInfoServiceProvider.
@@ -47,5 +48,24 @@ return [
     */
 
     'version' => env('APP_VERSION'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Integrity Manifest
+    |--------------------------------------------------------------------------
+    |
+    | Versions declared by integrity-manifest.json in the application root, read
+    | by PlaylogiqUtils\Support\ManifestInfo. `release` is the control-program
+    | ("app core") version, `inventory` the critical-components scope the manifest
+    | was built against. An application without a manifest reports 'none'.
+    |
+    */
+
+    'manifest' => [
+        'release'   => ManifestInfo::release(),
+        'inventory' => ManifestInfo::inventory(),
+        'date'      => ManifestInfo::date(),
+        'version'   => ManifestInfo::version(),
+    ],
 
 ];

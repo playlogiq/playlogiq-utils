@@ -10,7 +10,8 @@ use PlaylogiqUtils\Integrity\Models\SettingsIntegrityCheck;
 /**
  * GLI-33 §2.3 — the daily Settings Integrity Check: every GLI-regulated skin and the global
  * settings, compared against their newest snapshot and recorded with TRIGGER_SCHEDULED and
- * no user.
+ * no user. The global settings only when the application certifies any (a non-empty
+ * settings.global_registry).
  *
  * No authorisation, deliberately: nobody asks for this run, the scheduler does, and it
  * reaches every regulated skin because certifying all of them is the point. It is reachable
@@ -56,9 +57,9 @@ class ScheduledSettingsIntegrityChecks
      */
     public function run(): array
     {
-        $reader = app(CriticalSettingsReader::class, [
-            'inventory' => new CriticalComponentsInventory((array) config('critical_components'), base_path()),
-        ]);
+        $inventory = new CriticalComponentsInventory((array) config('critical_components'), base_path());
+
+        $reader = app(CriticalSettingsReader::class, ['inventory' => $inventory]);
 
         $outcomes = [];
 
@@ -73,6 +74,12 @@ class ScheduledSettingsIntegrityChecks
             $this->log->record(SettingsIntegrityCheck::TRIGGER_SCHEDULED, $report, null);
 
             $outcomes[$skinId] = (string) $report['status'];
+        }
+
+        // An application that certifies no global settings has no global scope to compare:
+        // checking it would find no baseline, and report a missing one, every day.
+        if ($inventory->globalSettingsKeys() === []) {
+            return $outcomes;
         }
 
         $global = $this->guard()->inspect(null);

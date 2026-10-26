@@ -54,7 +54,7 @@ class RunScheduledSettingsIntegrityChecks extends BaseJob implements ShouldQueue
         }
 
         $message = sprintf(
-            'RunScheduledSettingsIntegrityChecks [GLI-33 §2.3]: %d scope(s) checked (regulated skins and global settings) — %s',
+            'RunScheduledSettingsIntegrityChecks [GLI-33 §2.3]: %d scope(s) checked (regulated skins, and the global settings when certified) — %s',
             count($outcomes),
             $summary === [] ? 'none' : implode(' ', $summary)
         );

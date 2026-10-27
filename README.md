@@ -509,3 +509,63 @@ Typical footer, shared across projects:
 `config('app.manifest.*')` exists for the same reason as `app.build`, but it is
 frozen by `config:cache` (an artifact cached before its manifest existed bakes
 `none`), so views should call the class.
+
+## ⚙️ Service Configuration Profiles (PQPL-7443)
+
+`PlaylogiqUtils\ServiceConfiguration` is the mechanism every application uses to
+configure its external services (sportsbook, tracking, mailer, ...): a profile
+(`service_configuration_profiles`) picks one implementation (`code`) of one service
+`type` and holds its settings as keys (`service_configuration_profile_keys`). Moved
+from Betmaker so Backoffice and the LogiqGames API configure services the same way.
+
+`ServiceConfigurationServiceProvider` is auto-discovered. It merges a default
+`config/service_configuration.php` (no types) and loads the migrations. They keep
+Betmaker's filenames and guard every step, so a database that already has the tables
+skips them; the owner columns (`owner_type`/`owner_id`) are new.
+
+| Piece | What it does |
+|---|---|
+| `TypeRegistry` | Types, implementation namespaces and allowed codes from `config('service_configuration.types')`. |
+| `SchemaResolver` | Form schema of a profile: the implementation's static `configSchema()` plus the type's `extra_fields`. |
+| `ProfileKeyWriter` | Saves submitted keys: schema keys only, masked/empty secrets keep the stored value, missing keys deleted one by one (model events fire). |
+| `SecretMask` | `mask()` (same output as Betmaker's `hide_sensitive_data()`), `looksMasked()`, `secretKeysOf($schema)`. |
+| `Models\ServiceConfigurationProfile` / `...Key` | Base models: `keys()`, `owner()` (morph), key deletion on profile delete, encrypted secret values. |
+| `PlaylogiqUtils\Crypto\EncryptsSpecificKeys` | The cast that encrypts a key/value row's value when its key names a secret. |
+
+### What the application provides
+
+1. Its types, in `config/service_configuration.php`
+   (`php artisan vendor:publish --tag=playlogiq-service-configuration-config`):
+
+   ```php
+   'types' => [
+       2 => [
+           'label'           => 'Tracking systems',
+           'namespace'       => 'App\\Services\\TrackingSystems\\',
+           'implementations' => ['KludataTS', 'PrismeTS'],
+           'extra_fields'    => [
+               ['key' => 'include_test_players', 'label' => 'Include test players', 'type' => 'boolean', 'required' => false],
+           ],
+       ],
+   ],
+   ```
+
+2. Its owner's morph alias, e.g. in `AppServiceProvider::boot()`:
+   `Relation::morphMap(['skin' => Skin::class])` (Betmaker) or `['brand' => Brand::class]`
+   (Backoffice). Not `enforceMorphMap`: Sanctum's `tokenable` still stores class names.
+
+3. Optionally, subclasses of the models for its own behaviour (auditing, constants,
+   helper relations). Point the profile at the key subclass:
+
+   ```php
+   class ServiceConfigurationProfile extends \PlaylogiqUtils\ServiceConfiguration\Models\ServiceConfigurationProfile
+   {
+       protected static $keyModel = ServiceConfigurationProfileKey::class;
+   }
+   ```
+
+   A subclass that overrides `booted()` must call `parent::booted()`, or deleting a
+   profile leaves its keys behind. An audit trait's `deleting` hook runs before that
+   mass delete (trait boot methods run before `booted()`), so it can still snapshot the keys.
+
+Authorisation, controllers, views, routes and cache busting stay in the application.

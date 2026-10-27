@@ -10,7 +10,7 @@ use Throwable;
  * Eloquent cast for key/value tables: encrypts the value only when the row's key names a
  * secret (the defaults below plus the model's own SECRET_KEYS constant).
  *
- * Moved from betmaker's App\Casts\EncryptsSpecificKeys (PQPL-7443), which now extends it.
+ * Moved from betmaker's App\Casts\EncryptsSpecificKeys (PQPL-7443); betmaker now uses it directly.
  * Everything goes through static:: so a subclass can extend $defaultSecretKeys.
  */
 class EncryptsSpecificKeys implements CastsAttributes {

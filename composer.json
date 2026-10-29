@@ -52,7 +52,8 @@
       "providers": [
         "PlaylogiqUtils\\Status\\StatusServiceProvider",
         "PlaylogiqUtils\\Support\\BuildInfoServiceProvider",
-        "PlaylogiqUtils\\Integrity\\IntegrityServiceProvider"
+        "PlaylogiqUtils\\Integrity\\IntegrityServiceProvider",
+        "PlaylogiqUtils\\ServiceConfiguration\\ServiceConfigurationServiceProvider"
       ]
     }
   }

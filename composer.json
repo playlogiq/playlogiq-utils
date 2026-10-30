@@ -45,7 +45,8 @@
   },
   "suggest": {
     "laravel-zero/foundation": "Required only by PlaylogiqUtils\\Jobs\\BaseJob and its subclasses, for Illuminate\\Foundation\\Bus\\Dispatchable. A Laravel application already has illuminate/foundation through laravel/framework and needs nothing extra. It is deliberately NOT a hard requirement: in Lumen, that mirror's helpers.php is autoloaded before Lumen's own, so Laravel's storage_path() and response() win and then fail on container bindings Lumen never makes (path.storage, the ResponseFactory contract) — which breaks the host application on every request. A Lumen app that wants the jobs must require it itself and bind those.",
-    "aws/aws-sdk-php": "Required by PlaylogiqUtils\\Integrity: the fleet check sends integrity:verify over SSM (FleetCommand) and the settings snapshot store assumes a role through STS (SnapshotCredentials). Every Playlogiq application that runs the checks already has it."
+    "aws/aws-sdk-php": "Required by PlaylogiqUtils\\Integrity: the fleet check sends integrity:verify over SSM (FleetCommand) and the settings snapshot store assumes a role through STS (SnapshotCredentials); the tinker audit reads the Session Manager log from CloudWatch (SessionManagerLogs). Every Playlogiq application that runs the checks already has it.",
+    "laravel/tinker": "Audited by PlaylogiqUtils\\Integrity\\Tinker: AuditedTinkerCommand replaces v2.9.0's handle(), diff it on every upgrade."
   },
   "extra": {
     "laravel": {

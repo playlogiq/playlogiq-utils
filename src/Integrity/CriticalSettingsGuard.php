@@ -22,7 +22,9 @@ use Throwable;
  *             change goes through here and leaves a snapshot behind, so a difference
  *             means the stored configuration moved by some other route.
  *
- *   record()  after the write, synchronously. One snapshot per save.
+ *   record()  after the write, synchronously. One snapshot per save — of what the save
+ *             wrote plus what was already certified: a drifted value it did not write keeps
+ *             its last snapshotted value, so the drift is still there to be found.
  *
  * And one that is not part of a save at all:
  *
@@ -56,17 +58,22 @@ use Throwable;
  * WHAT HAPPENS ON A MISMATCH. A significant event, always — that is the finding, and it
  * is recorded whether or not the save proceeds. Then it splits:
  *
- *   - the mismatch is in a setting this save is writing: proceed. The operator is
- *     replacing that value anyway, and the snapshot taken afterwards records what they
- *     chose. Refusing would leave them unable to correct the very field that is wrong.
- *   - the mismatch is anywhere else: refuse the save. Continuing would write a new
- *     snapshot that silently adopts the unexplained value as certified, which is exactly
- *     the laundering this exists to prevent.
+ *   - this save writes at least one of the drifted settings: proceed. The operator is
+ *     replacing those values anyway, and the snapshot taken afterwards records what they
+ *     chose. Refusing would leave them unable to correct the very fields that are wrong —
+ *     one form at a time, when the drift spans more than one form.
+ *   - this save writes none of them: refuse it. It is not addressing the drift, and the
+ *     finding should be dealt with before anything else in the certified configuration moves.
+ *
+ * Either way no drift is ever adopted: the drifted settings a proceeding save does not write
+ * keep their previous certified value in the snapshot record() takes (see there), so they
+ * stay drift until a save writes them, or until somebody restores them.
  *
  * EVERY COMPARISON IS IN THE HISTORY. Whenever check() actually compares — a save that
  * touches the certified configuration of a regulated skin — it leaves a
  * settings_integrity_checks row with trigger TRIGGER_CONFIGURATION_CHANGE, whatever it found:
- * a match, a drift (blocking or not), a missing baseline, or a comparison that failed. The
+ * a match, a drift, a missing baseline, or a comparison that failed — and with the action it
+ * took on the save, ACTION_REJECTED for a refused one and ACTION_ACCEPTED otherwise. The
  * same history the backoffice button writes to, so "was this skin checked, and what did it
  * say" has one answer. A save that is never compared — an unrelated tab, a skin outside GLI
  * scope, snapshots switched off — leaves none, because nothing was checked.
@@ -75,8 +82,8 @@ use Throwable;
  * logged and then allowed through. The configuration must not depend on the availability
  * of the thing that only observes it — a bucket outage that froze every settings save in
  * the backoffice would be a worse failure than a late detection, and the verifier still
- * catches the divergence on its next run. A genuine mismatch is the one thing that does
- * block, because that is a finding rather than an outage.
+ * catches the divergence on its next run. A genuine mismatch that the save does not touch
+ * is the one thing that does block, because that is a finding rather than an outage.
  *
  * THE GLOBAL SCOPE. A null skin id means the global settings registry. It has no GLI flag
  * of its own, so it is always in scope; everything else above applies to it unchanged.
@@ -87,9 +94,10 @@ class CriticalSettingsGuard
      * Stands in for the incoming value of a setting this save does not write.
      *
      * A drift report covers every setting that disagrees, and the ones outside the save
-     * are the ones that block it — so they are exactly what somebody reads the log line
-     * for. Leaving the field out would make them look like an oversight; null would be a
-     * lie, because null is a value a setting can genuinely hold.
+     * are the ones it leaves unresolved — or that refuse it, when it writes none of them —
+     * so they are exactly what somebody reads the log line for. Leaving the field out would
+     * make them look like an oversight; null would be a lie, because null is a value a
+     * setting can genuinely hold.
      */
     const NOT_IN_SAVE = '(not written by this save)';
 
@@ -103,6 +111,13 @@ class CriticalSettingsGuard
     const CHECK_NOT_REGULATED = 'not_regulated';
     const CHECK_DISABLED      = 'disabled';
     const CHECK_FAILED        = 'failed';
+
+    /**
+     * Not an outcome of inspect(): what the application's comparison after a save reports
+     * when check() found drift and the save left none behind. Here so the history's labels
+     * stay the guard's words (SettingsIntegrityCheck::STATUSES).
+     */
+    const CHECK_FIXED = 'fixed';
 
     /** @var CriticalComponentsInventory */
     private $inventory;
@@ -163,7 +178,7 @@ class CriticalSettingsGuard
      *                                       drift line says what was about to replace
      *                                       what
      *
-     * @throws CriticalSettingsDriftException when a setting outside $scope disagrees
+     * @throws CriticalSettingsDriftException when settings disagree and $scope writes none of them
      */
     public function check(?int $skinId, array $scope, array $incoming = []): void
     {
@@ -211,7 +226,7 @@ class CriticalSettingsGuard
                     'admin_id' => Auth::id(),
                 ]);
 
-                $this->logCheck($skinId, self::CHECK_NO_BASELINE);
+                $this->logCheck($skinId, self::CHECK_NO_BASELINE, SettingsIntegrityCheck::ACTION_ACCEPTED);
 
                 return;
             }
@@ -224,13 +239,13 @@ class CriticalSettingsGuard
                 'CriticalSettingsGuard: could not check ' . SettingsSnapshotStore::scopeName($skinId) . ': ' . $e->getMessage()
             );
 
-            $this->logCheck($skinId, self::CHECK_FAILED, null, [], $e->getMessage());
+            $this->logCheck($skinId, self::CHECK_FAILED, SettingsIntegrityCheck::ACTION_ACCEPTED, null, [], $e->getMessage());
 
             return;
         }
 
         if ($drift === []) {
-            $this->logCheck($skinId, self::CHECK_MATCHES, $latest['key']);
+            $this->logCheck($skinId, self::CHECK_MATCHES, SettingsIntegrityCheck::ACTION_ACCEPTED, $latest['key']);
 
             return;
         }
@@ -244,16 +259,23 @@ class CriticalSettingsGuard
             'admin_id'    => Auth::id(),
         ]);
 
+        // Writing one drifted setting is enough to proceed; the rest stay drift (record()).
+        $rejected = array_intersect(array_keys($drift), $scope) === [];
+
         // Before the refusal below, so a blocked save is in the history too — that is the
         // row an auditor most needs.
-        $this->logCheck($skinId, self::CHECK_DRIFT, $latest['key'], $explained);
+        $this->logCheck(
+            $skinId,
+            self::CHECK_DRIFT,
+            $rejected ? SettingsIntegrityCheck::ACTION_REJECTED : SettingsIntegrityCheck::ACTION_ACCEPTED,
+            $latest['key'],
+            $explained
+        );
 
-        $outside = array_values(array_diff(array_keys($drift), $scope));
-
-        if ($outside !== []) {
+        if ($rejected) {
             // Through the container, so the application can bind a subclass that words and
             // renders the refusal its own way.
-            throw app(CriticalSettingsDriftException::class, ['settings' => $outside, 'global' => $skinId === null]);
+            throw app(CriticalSettingsDriftException::class, ['settings' => array_keys($drift), 'global' => $skinId === null]);
         }
     }
 
@@ -308,6 +330,22 @@ class CriticalSettingsGuard
             }
 
             $values = $this->reader->values($skinId);
+
+            // A drifted value this save did not write is not certified by it: the snapshot
+            // keeps the previous one, so the drift outlives the save and is still reported
+            // until a save writes that setting, or it is restored. Only against a snapshot
+            // taken in scope: after an exit snapshot (flag '0') nothing was certified, values
+            // could change freely, and the save that re-enrols the skin certifies them as they
+            // are — restoring the exit values would mint a baseline that is already drift.
+            if ($latest !== null && ($skinId === null
+                || (string) ($latest['payload']['settings'][CriticalSettingsReader::REGULATED_KEY] ?? '') === '1')) {
+                foreach ($this->compare($latest, $values) as $key => $pair) {
+                    if (!in_array($key, $critical, true)) {
+                        $values[$key] = $pair['snapshot'];
+                    }
+                }
+            }
+
             $digest = SettingsSnapshot::settingsDigest($values);
 
             $previous = null;
@@ -372,10 +410,10 @@ class CriticalSettingsGuard
      * a question. A document written here would say a configuration was certified at a
      * moment when the only thing that happened was somebody looking at it, and if the
      * values had drifted it would adopt the drifted ones as the new baseline. That is the
-     * laundering check() refuses during a save, and refusing it during a save while
+     * laundering record() refuses even during a save, and refusing it during a save while
      * offering it as a button would be worse than not offering the button.
      *
-     * So drift stays drift until somebody saves the skin's settings, which is the act that
+     * So drift stays drift until somebody saves the drifted settings, which is the act that
      * decides what the values should be. Until then this keeps reporting it, and the
      * significant event log keeps a line per time it was asked.
      *
@@ -515,11 +553,23 @@ class CriticalSettingsGuard
      */
     private function drift(?int $skinId, array $latest): array
     {
+        return $this->compare($latest, $this->reader->values($skinId));
+    }
+
+    /**
+     * drift(), against live values already read.
+     *
+     * @param array{key: string, sha256: string, payload: array<string, mixed>} $latest
+     * @param array<string, string|null>                                         $live
+     *
+     * @return array<string, array{snapshot: string|null, database: string|null}>
+     */
+    private function compare(array $latest, array $live): array
+    {
         $recorded = isset($latest['payload']['settings']) && is_array($latest['payload']['settings'])
             ? $latest['payload']['settings']
             : [];
 
-        $live  = $this->reader->values($skinId);
         $drift = [];
 
         foreach ($recorded as $key => $value) {
@@ -663,11 +713,13 @@ class CriticalSettingsGuard
      * check()'s comparison, as a row in the Settings Integrity Check history. Never throws:
      * SettingsIntegrityCheckLog logs a failed write rather than letting it decide the save.
      *
+     * @param int                                       $action a SettingsIntegrityCheck::ACTION_*
      * @param array<string, array<string, string|null>> $drift
      */
     private function logCheck(
         ?int $skinId,
         string $status,
+        int $action,
         ?string $comparedTo = null,
         array $drift = [],
         ?string $error = null
@@ -681,6 +733,7 @@ class CriticalSettingsGuard
         $this->checks->record(SettingsIntegrityCheck::TRIGGER_CONFIGURATION_CHANGE, [
             'skin_id'     => $skinId,
             'status'      => $status,
+            'action'      => $action,
             'compared_to' => $comparedTo,
             'drift'       => $drift,
             'error'       => $error,

@@ -37,7 +37,8 @@
     "illuminate/http": "^8.37|^9.0|^10.0",
     "illuminate/queue": "^8.0|^9.0|^10.0",
     "illuminate/support": "^8.0|^9.0|^10.0",
-    "nesbot/carbon": "^2.0|^3.0"
+    "nesbot/carbon": "^2.0|^3.0",
+    "psr/log": "^1.1|^2.0|^3.0"
   },
   "require-dev": {
     "laravel-zero/foundation": "^8.0|^9.0|^10.0",

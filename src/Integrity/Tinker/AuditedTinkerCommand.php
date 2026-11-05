@@ -14,8 +14,9 @@ use Psy\VersionUpdater\Checker;
  * `php artisan tinker` running {@see AuditedShell}. Bound over the package command in
  * IntegrityServiceProvider.
  *
- * shortcut: handle() is laravel/tinker v2.9.0's with `new AuditedShell`, the package builds
- * its Shell inline; diff it against the parent on every laravel/tinker upgrade.
+ * shortcut: handle() is laravel/tinker v2.11.1's with `new AuditedShell`, the package builds
+ * its Shell inline; diff it against the parent on every laravel/tinker upgrade. It also runs
+ * on v2.9.0 (Betmaker): its psysh (0.12.4) has no setTrustProject(), hence the guard.
  */
 class AuditedTinkerCommand extends TinkerCommand
 {
@@ -25,6 +26,12 @@ class AuditedTinkerCommand extends TinkerCommand
 
         $config = Configuration::fromInput($this->input);
         $config->setUpdateCheck(Checker::NEVER);
+
+        $appConfig = $this->getLaravel()->make('config');
+        // Without it psysh would prompt to trust the project, where tinker's config says 'always'.
+        if (method_exists($config, 'setTrustProject')) {
+            $config->setTrustProject($appConfig->get('tinker.trust_project'));
+        }
 
         $config->getPresenter()->addCasters(
             $this->getCasters()
@@ -42,10 +49,8 @@ class AuditedTinkerCommand extends TinkerCommand
 
         $path .= '/composer/autoload_classmap.php';
 
-        $config = $this->getLaravel()->make('config');
-
         $loader = ClassAliasAutoloader::register(
-            $shell, $path, $config->get('tinker.alias', []), $config->get('tinker.dont_alias', [])
+            $shell, $path, $appConfig->get('tinker.alias', []), $appConfig->get('tinker.dont_alias', [])
         );
 
         if ($code = $this->option('execute')) {

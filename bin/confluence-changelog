@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# Confluence changelog (CodeBuild).
+#
+# Appends one entry per deploy to a project's Confluence changelog page, headed by the
+# deployed commit of CHANGELOG_REPO and listing main's first-parent history (PR merges and
+# direct commits), with when it ran and links to the build and to the CodePipeline view
+# (the state of every stage).
+#
+# Does what `mcp-jira-updates sync` did, with curl and jq only (the tool's Octokit needed
+# Node >= 18, which the build image lacks): the build has no .git (CodePipeline hands
+# CodeBuild a git archive), so the commits are read through the GitHub API, walking the
+# first-parent chain from the deployed commit (CODEBUILD_RESOLVED_SOURCE_VERSION; without
+# it the tip of CHANGELOG_BRANCH), 15 commits, one request each. The entry is storage-format
+# XHTML, prepended to the page through the Confluence v2 API on the api.atlassian.com gateway
+# (so a scoped token with read/write:page:confluence works).
+#
+# Entry layout: a date | commit heading, one facts line (manifest, build link, pipeline link;
+# each only when known, the line left out when none is), then one Changes list: merges
+# into main first, then direct commits. Jira keys link to
+# JIRA_HOST. The manifest is the inventory_version of integrity-manifest.json in the
+# application root (which component inventory the release was certified against); a project
+# without that file gets no manifest in the facts line.
+#
+# No state cache (CodeBuild keeps nothing between builds): the page itself is the state. A deploy
+# whose commit already heads an entry on the page appends nothing; a commit only listed inside an
+# older entry (e.g. a rollback) still gets its own entry.
+#
+# A changelog problem never fails the deploy: every error is logged and the script exits
+# 0, unless CHANGELOG_STRICT=1. Which environments run it is decided per CodeBuild project.
+#
+# Variables (CodeBuild project environment):
+#   CHANGELOG_REPO      required: GitHub repo the commits are read from, owner/name
+#   CONFLUENCE_PAGE     required: the changelog page URL (or a numeric page id)
+#   JIRA_EMAIL          Atlassian account the page is edited as; else Parameter Store chg_sta_jira_email
+#   JIRA_API_TOKEN      that account's Atlassian API token; else Parameter Store chg_sta_jira_token
+#   GITHUB_TOKEN        token able to read CHANGELOG_REPO; else Parameter Store chg_sta_github_token
+#   JIRA_HOST           default https://playlogiq.atlassian.net
+#   CHANGELOG_SSM_PREFIX  Parameter Store name prefix for the three credentials; default chg_sta_
+#   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
+#                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
+#   DRY_RUN=1           print the entry without touching Confluence
+#   CHANGELOG_STRICT=1  exit non-zero on error instead of 0
+#
+# Run from the application root:  vendor/bin/confluence-changelog
+# Each consumer sets CHANGELOG_REPO and CONFLUENCE_PAGE on its CodeBuild project, e.g.
+#   backoffice:
+#     CHANGELOG_REPO=playlogiq/backoffice
+#     CONFLUENCE_PAGE=https://playlogiq.atlassian.net/wiki/spaces/SD/pages/911179798/Changelog+Backoffice
+#   betmaker:
+#     CHANGELOG_REPO=playlogiq/betmaker-bo
+#     CONFLUENCE_PAGE=https://playlogiq.atlassian.net/wiki/spaces/SD/pages/937099265/Testing+changelog
+
+set -Eeuo pipefail
+
+log() { echo "[CHANGELOG] $*"; }
+fail() { log "$*"; [[ "${CHANGELOG_STRICT:-0}" == 1 ]] && exit 1; exit 0; }
+# Any unexpected error goes through fail(). Inside $(...) it only exits 1, so the log line is not
+# captured as a value and the caller's own `|| fail` (or this trap, in the main shell) handles it.
+trap 'if (( BASH_SUBSHELL )); then exit 1; fi; fail "unexpected error at line $LINENO; skipping the Confluence changelog"' ERR
+
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Checked before the credential reads, so a misconfigured project fails fast.
+[[ -n "${CHANGELOG_REPO:-}" ]] || fail "CHANGELOG_REPO (owner/name) is not set; skipping the Confluence changelog"
+[[ "$CHANGELOG_REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ && "${CHANGELOG_REPO#*/}" != . && "${CHANGELOG_REPO#*/}" != .. ]] || fail "CHANGELOG_REPO '$CHANGELOG_REPO' is not owner/name; skipping the Confluence changelog"
+[[ -n "${CONFLUENCE_PAGE:-}" ]] || fail "CONFLUENCE_PAGE is not set; skipping the Confluence changelog"
+if [[ "$CONFLUENCE_PAGE" =~ /pages/([0-9]+) ]]; then page_id="${BASH_REMATCH[1]}"; else page_id="$CONFLUENCE_PAGE"; fi
+[[ "$page_id" =~ ^[0-9]+$ ]] || fail "cannot read a page id from CONFLUENCE_PAGE '$CONFLUENCE_PAGE'; skipping the Confluence changelog"
+
+# Credentials not set on the project are read from Parameter Store (needs the aws CLI and ssm:GetParameter).
+# The default prefix is staging's; another environment's project sets its own CHANGELOG_SSM_PREFIX.
+ssm_prefix="${CHANGELOG_SSM_PREFIX:-chg_sta_}"
+for pair in JIRA_EMAIL:jira_email JIRA_API_TOKEN:jira_token GITHUB_TOKEN:github_token; do
+    v="${pair%%:*}" param="$ssm_prefix${pair#*:}"
+    [[ -n "${!v:-}" ]] && continue
+    command -v aws >/dev/null || fail "$v is not set and the aws CLI is not on this build image to read $param; skipping the Confluence changelog"
+    value="$(AWS_MAX_ATTEMPTS=1 aws ssm get-parameter --cli-connect-timeout 5 --cli-read-timeout 10 \
+        --name "$param" --with-decryption --query Parameter.Value --output text)" \
+        || fail "could not read $param from Parameter Store; skipping the Confluence changelog"
+    [[ -n "$value" ]] || fail "$param is empty in Parameter Store; skipping the Confluence changelog"
+    export "$v=$value"
+done
+command -v curl >/dev/null || fail "curl is not on this build image; skipping the Confluence changelog"
+command -v jq >/dev/null || fail "jq is not on this build image; skipping the Confluence changelog"
+# The manifest is optional (not every project has one); a manifest that is there but unusable is an error.
+INVENTORY_VERSION=""
+if [[ -f integrity-manifest.json ]]; then
+    INVENTORY_VERSION="$(jq -r '.inventory_version' integrity-manifest.json)" \
+        || fail "could not read integrity-manifest.json; skipping the Confluence changelog"
+    [[ -n "$INVENTORY_VERSION" && "$INVENTORY_VERSION" != null ]] \
+        || fail "integrity-manifest.json has no inventory_version; skipping the Confluence changelog"
+    log "inventory version $INVENTORY_VERSION"
+else
+    log "no integrity-manifest.json in $PWD; the entry has no manifest"
+fi
+
+JIRA_HOST="${JIRA_HOST:-https://playlogiq.atlassian.net}"
+JIRA_HOST="${JIRA_HOST%/}"
+
+# The deployed commit. CODEBUILD_SOURCE_VERSION is an S3 ARN on CodePipeline builds, hence the sha check.
+branch="${CHANGELOG_BRANCH:-main}"
+ref="$branch"
+for sha in "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" "${CODEBUILD_SOURCE_VERSION:-}"; do
+    if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then ref="$sha"; break; fi
+done
+
+run_id="${CODEBUILD_BUILD_ID:-}"
+run_url=""
+if [[ -n "$run_id" ]]; then
+    # CodeBuild sets CODEBUILD_BUILD_URL; without it the console URL is region + project + build id,
+    # built only when AWS_REGION is known (else the entry shows the bare build id).
+    run_url="${CODEBUILD_BUILD_URL:-}"
+    if [[ -z "$run_url" && -n "${AWS_REGION:-}" ]]; then
+        run_url="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/${run_id%%:*}/build/${run_id/:/%3A}"
+    fi
+fi
+
+# Pipeline builds have CODEBUILD_INITIATOR "codepipeline/<pipeline>"; link the pipeline view (every stage's state).
+pipeline_url=""
+pipeline="${CODEBUILD_INITIATOR:-}"
+pipeline="${pipeline#codepipeline/}"
+if [[ "${CODEBUILD_INITIATOR:-}" == codepipeline/* && -n "${AWS_REGION:-}" && "$pipeline" =~ ^[A-Za-z0-9.@_-]+$ ]]; then
+    pipeline_url="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${pipeline}/view?region=${AWS_REGION}"
+fi
+
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/confluence-changelog.XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+# Fetches one commit into commit.json and prints the HTTP status: 000 whenever curl fails (GitHub
+# unreachable, timeout, truncated body), even if a status was received, so the body is never parsed.
+gh_commit() {
+    local code rc=0
+    code="$(curl -sS --connect-timeout 10 --max-time 30 -o "$WORKDIR/commit.json" -w '%{http_code}' \
+        -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/$CHANGELOG_REPO/commits/$1")" || rc=$?
+    if (( rc != 0 )); then code=000; fi
+    printf '%s' "$code"
+}
+
+status="$(gh_commit "$ref")"
+# The resolved sha belongs to the build's primary source, which need not be CHANGELOG_REPO: GitHub
+# answers 422 (or 404) for a sha it does not have, and then the entry is headed by the branch tip.
+if [[ "$ref" != "$branch" && ( "$status" == 422 || "$status" == 404 ) ]]; then
+    log "$ref is not a $CHANGELOG_REPO commit (HTTP $status); using the tip of $branch"
+    ref="$branch"
+    status="$(gh_commit "$ref")"
+fi
+
+log "reading $CHANGELOG_REPO@$ref"
+# The API has no --first-parent: walk the chain by hand from the deployed commit.
+sha="$ref"
+: > "$WORKDIR/commits.jsonl"
+for i in $(seq 15); do
+    (( i == 1 )) || status="$(gh_commit "$sha")"
+    [[ "$status" == 200 ]] || fail "GitHub API read of $sha returned HTTP $status; skipping the Confluence changelog"
+    jq -c '{sha, author: (.commit.author.name // .author.login // "Unknown"), message: .commit.message, merge: ((.parents | length) > 1)}' \
+        "$WORKDIR/commit.json" >> "$WORKDIR/commits.jsonl"
+    sha="$(jq -r '.parents[0].sha // empty' "$WORKDIR/commit.json")"
+    [[ -n "$sha" ]] || break
+done
+
+# Storage-format XHTML entry: date first, one line of release facts, then merges, then direct commits.
+jq -rs --arg mv "$INVENTORY_VERSION" --arg at "$STARTED_AT" --arg pipeline_url "$pipeline_url" \
+       --arg run_id "$run_id" --arg run_url "$run_url" --arg browse "$JIRA_HOST/browse/" '
+    def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\""; "&quot;");
+    def linkjira: gsub("\\b(?<t>[A-Z][A-Z0-9]+-[0-9]+)\\b"; "<a href=\"\($browse | esc)\(.t)\">\(.t)</a>");
+    def item:
+        (.message | split("\n")[0]) as $title
+        | "<li><code>\(.sha[0:7])</code> \($title | esc | linkjira) <em>— \(.author | esc)</em></li>";
+    . as $commits | $commits[0] as $head
+    | "<h2>📅 \($at[0:10]) · \($at[11:16]) UTC | <code>\($head.sha[0:7])</code></h2>"
+      + ([ (if $mv == "" then empty else "manifest <code>\($mv | esc)</code>" end),
+           (if $run_id == "" then empty elif $run_url == "" then "build \($run_id | esc)"
+            else "<a href=\"\($run_url | esc)\">build</a>" end),
+           (if $pipeline_url == "" then empty else "<a href=\"\($pipeline_url | esc)\">pipeline</a>" end)
+         ] | if length == 0 then "" else "<p>\(join(" · "))</p>" end)
+      # Merges first, then direct commits; each keeps the first-parent order (newest first).
+      + (if ($commits | length) == 0 then ""
+         else "<h4>🔄 Changes</h4><ul>\(([$commits[] | select(.merge)] + [$commits[] | select(.merge | not)]) | map(item) | join(""))</ul>" end)
+      + "<hr/>"
+' "$WORKDIR/commits.jsonl" > "$WORKDIR/entry.html" || fail "could not build the changelog entry; skipping the Confluence changelog"
+head_short="$(jq -rs '.[0].sha[0:7]' "$WORKDIR/commits.jsonl")"
+
+if [[ "${DRY_RUN:-0}" == 1 ]]; then
+    log "dry run, entry for page $page_id:"
+    cat "$WORKDIR/entry.html"; echo
+    exit 0
+fi
+
+# Scoped API tokens are only accepted on the api.atlassian.com gateway, which is addressed by cloud id.
+cloud_id="$(curl -fsS --connect-timeout 10 --max-time 30 "$JIRA_HOST/_edge/tenant_info" | jq -r '.cloudId // empty')" || true
+[[ -n "$cloud_id" ]] || fail "could not resolve the Atlassian cloud id of $JIRA_HOST; skipping the Confluence changelog"
+page_url="https://api.atlassian.com/ex/confluence/$cloud_id/wiki/api/v2/pages/$page_id"
+
+log "sync $CHANGELOG_REPO@$head_short -> $CONFLUENCE_PAGE"
+curl -fsS --connect-timeout 10 --max-time 30 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" "$page_url?body-format=storage" -o "$WORKDIR/page.json" \
+    || fail "could not read Confluence page $page_id; skipping the Confluence changelog"
+
+# Skip if the deployed commit already heads an entry (a re-deploy of something already logged).
+# Only headings count: a rollback to a commit listed inside an older entry is still logged.
+if jq -e --arg c "<code>$head_short</code></h2>" '.body.storage.value // "" | contains($c)' "$WORKDIR/page.json" >/dev/null; then
+    log "commit $head_short is already in the Confluence page; nothing to do"
+    exit 0
+fi
+
+jq --rawfile entry "$WORKDIR/entry.html" --arg id "$page_id" --arg short "$head_short" '{
+    id: $id, status: "current", title: (.title // "Changelogs"),
+    body: {representation: "storage", value: ($entry + "\n" + (.body.storage.value // ""))},
+    version: {number: ((.version.number // 1) + 1), message: "Changelog \($short)"}
+}' "$WORKDIR/page.json" > "$WORKDIR/put.json" || fail "could not build the Confluence update; skipping the Confluence changelog"
+curl -fsS --connect-timeout 10 --max-time 30 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -X PUT -H "Content-Type: application/json" -H "Accept: application/json" \
+    --data @"$WORKDIR/put.json" "$page_url" -o /dev/null \
+    || fail "Confluence update of page $page_id failed; the deploy goes on"
+log "done: page $page_id now at version $(jq '.version.number' "$WORKDIR/put.json")"

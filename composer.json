@@ -10,6 +10,7 @@
       "email": "info@playlogiq.com"
     }
   ],
+  "bin": ["bin/confluence-changelog"],
   "autoload": {
     "files": [
       "src/Polyfills/polyfills.php",

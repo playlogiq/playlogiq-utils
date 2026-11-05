@@ -441,3 +441,123 @@ pipeline view showing every stage's state. The other
 variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are
 documented at the top of the script. It never fails the deploy unless
 `CHANGELOG_STRICT=1`.
+
+🔑 Crypto: APP_KEY rotation key ring
+
+`PlaylogiqUtils\Crypto` holds the key-ring primitives shared by Betmaker and
+Backoffice. The host application keeps its own `config/keyring.php`, binds the
+ring and the `encrypter` in its `AppServiceProvider`, and owns its
+`secrets:rotate` / `secrets:rotate-status` commands.
+
+- `AppKeyRing(currentKey, currentKid = null, oldKeys = '', oldKeysVar = 'APP_KEYS_OLD', defaultKid = 'app', decodeBase64 = true)`
+  parses `KEY`, `KEY_ID` and `KEYS_OLD` ("id:key,id:key"). `decodeBase64 = false`
+  keeps `base64:...` keys exactly as written (for keys that are hashed as a
+  password rather than used as AES material).
+- `KeyRingEntry` exposes `kid()`, `raw()` (decoded bytes) and `literal()` (as configured).
+- `RingEncrypter` is the framework `Encrypter` widened to decrypt under every ring key.
+- `KeyRingSignature` signs with the current key and verifies against the whole ring.
+- `CompactCrypt` is compact AES-256-GCM for short secrets (`c1:`/`c2:<kid>:` payloads);
+  it resolves `AppKeyRing` from the container.
+- `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.
+
+
+## 🛡️ Integrity checks (GLI-33)
+
+`PlaylogiqUtils\Integrity` holds the GLI-33 integrity checks, moved from Betmaker
+(PQPL-5432) so every application runs the same logic:
+
+- **App integrity**: the signed manifest of the control program
+  (`integrity:baseline`, `integrity:sign`, `integrity:verify`), the per-host
+  `Jobs\VerifyControlProgram` and the fleet-wide `Jobs\DispatchFleetIntegrityCheck`.
+- **Settings integrity**: `CriticalSettingsGuard` around every save of the
+  certified settings, the write-once snapshot store, `integrity:settings-snapshot`
+  and the daily `Jobs\RunScheduledSettingsIntegrityChecks`.
+
+`IntegrityServiceProvider` is auto-discovered. It registers the `integrity:*`
+commands and binds a log-only `Contracts\SignificantEvents` unless the application
+binds its own.
+
+### What stays in the application
+
+- `config/critical_components.php` (the inventory) and `config/integrity.php`
+  (`store`, plus `models.user` and `models.skin` for the `creator()`/`skin()`
+  relations; `models.user` falls back to the default auth provider's model).
+- The migrations for `app_integrity_checks`, `app_integrity_check_instances` and
+  `settings_integrity_checks`.
+- A `Contracts\CriticalSettingsReader` binding, if it uses the settings check:
+  which tables hold the settings is the application's business.
+- Authorisation, controllers, views, the schedule, the PEM keys, the manifest, CI
+  and the deploy gate.
+
+The inventory must cover `vendor/playlogiq/playlogiq-utils/src/Integrity`, so a
+change to the checks is a manifest mismatch like any other. The inventory refuses
+symlinks, so a Composer `path` repository needs `"options": {"symlink": false}`.
+
+### Extending
+
+- **The drift refusal**: the guard resolves `Exceptions\CriticalSettingsDriftException`
+  through the container with `settings` and `global` parameters. Bind a subclass
+  to word the message and render it your own way.
+- **The jobs**: extend them to keep your own class names in queue payloads, unique
+  locks and job ids. Their state is `protected` so it survives `SerializesModels`
+  in a subclass (`JobSubclassSerializationTest` pins this).
+
+## ⚙️ Service Configuration Profiles (PQPL-7443)
+
+`PlaylogiqUtils\ServiceConfiguration` is the mechanism every application uses to
+configure its external services (sportsbook, tracking, mailer, ...): a profile
+(`service_configuration_profiles`) picks one implementation (`code`) of one service
+`type` and holds its settings as keys (`service_configuration_profile_keys`). Moved
+from Betmaker so Backoffice and the LogiqGames API configure services the same way.
+
+`ServiceConfigurationServiceProvider` is auto-discovered. It merges a default
+`config/service_configuration.php` (no types) and loads the migrations. They keep
+Betmaker's filenames and guard every step, so a database that already has the tables
+skips them; the owner columns (`owner_type`/`owner_id`) are new.
+
+| Piece | What it does |
+|---|---|
+| `TypeRegistry` | Types, implementation namespaces and allowed codes from `config('service_configuration.types')`. |
+| `SchemaResolver` | Form schema of a profile: the implementation's static `configSchema()` plus the type's `extra_fields`. |
+| `ProfileKeyWriter` | Saves submitted keys: schema keys only, masked/empty secrets keep the stored value, missing keys deleted one by one (model events fire). |
+| `SecretMask` | `mask()` (same output as Betmaker's `hide_sensitive_data()`), `looksMasked()`, `secretKeysOf($schema)`. |
+| `Models\ServiceConfigurationProfile` / `...Key` | Base models: `keys()`, `owner()` (morph), key deletion on profile delete, encrypted secret values. |
+| `PlaylogiqUtils\Crypto\EncryptsSpecificKeys` | The cast that encrypts a key/value row's value when its key names a secret. |
+
+### What the application provides
+
+1. Its types, in `config/service_configuration.php`
+   (`php artisan vendor:publish --tag=playlogiq-service-configuration-config`):
+
+   ```php
+   'types' => [
+       2 => [
+           'label'           => 'Tracking systems',
+           'namespace'       => 'App\\Services\\TrackingSystems\\',
+           'implementations' => ['KludataTS', 'PrismeTS'],
+           'extra_fields'    => [
+               ['key' => 'include_test_players', 'label' => 'Include test players', 'type' => 'boolean', 'required' => false],
+           ],
+       ],
+   ],
+   ```
+
+2. Its owner's morph alias, e.g. in `AppServiceProvider::boot()`:
+   `Relation::morphMap(['skin' => Skin::class])` (Betmaker) or `['brand' => Brand::class]`
+   (Backoffice). Not `enforceMorphMap`: Sanctum's `tokenable` still stores class names.
+
+3. Optionally, subclasses of the models for its own behaviour (auditing, constants,
+   helper relations). Point the profile at the key subclass:
+
+   ```php
+   class ServiceConfigurationProfile extends \PlaylogiqUtils\ServiceConfiguration\Models\ServiceConfigurationProfile
+   {
+       protected static $keyModel = ServiceConfigurationProfileKey::class;
+   }
+   ```
+
+   A subclass that overrides `booted()` must call `parent::booted()`, or deleting a
+   profile leaves its keys behind. An audit trait's `deleting` hook runs before that
+   mass delete (trait boot methods run before `booted()`), so it can still snapshot the keys.
+
+Authorisation, controllers, views, routes and cache busting stay in the application.

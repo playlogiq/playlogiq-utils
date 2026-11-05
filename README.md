@@ -412,6 +412,35 @@ Either register `BuildInfoServiceProvider` by hand (it binds nothing and has no
 `boot()`, so unlike `StatusServiceProvider` it is safe there), or call
 `BuildInfo` directly from the application's own config.
 
+---
+
+## 📝 Confluence changelog
+
+`vendor/bin/confluence-changelog` prepends one entry per deploy to a Confluence
+page, built from the deployed commit's first-parent history read through the
+GitHub API. Run it from the application root in the CodeBuild project, which sets
+the two required variables `CHANGELOG_REPO` (owner/name) and `CONFLUENCE_PAGE`
+(page URL or id):
+
+```bash
+# backoffice
+CHANGELOG_REPO=playlogiq/backoffice \
+CONFLUENCE_PAGE=https://playlogiq.atlassian.net/wiki/spaces/SD/pages/911179798/Changelog+Backoffice \
+vendor/bin/confluence-changelog
+
+# betmaker
+CHANGELOG_REPO=playlogiq/betmaker-bo \
+CONFLUENCE_PAGE=https://playlogiq.atlassian.net/wiki/spaces/SD/pages/937099265/Testing+changelog \
+vendor/bin/confluence-changelog
+```
+
+If `integrity-manifest.json` is in the application root, its `inventory_version`
+is shown in the entry; without the file the entry has no manifest. The entry also
+links the CodeBuild build and, on CodePipeline builds (with `AWS_REGION` set), the
+pipeline view showing every stage's state. The other
+variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are
+documented at the top of the script. It never fails the deploy unless
+`CHANGELOG_STRICT=1`.
 
 🔑 Crypto: APP_KEY rotation key ring
 

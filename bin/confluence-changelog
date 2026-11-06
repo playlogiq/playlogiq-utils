@@ -31,11 +31,11 @@
 # Variables (CodeBuild project environment):
 #   CHANGELOG_REPO      required: GitHub repo the commits are read from, owner/name
 #   CONFLUENCE_PAGE     required: the changelog page URL (or a numeric page id)
-#   JIRA_EMAIL          Atlassian account the page is edited as; else Parameter Store chg_sta_jira_email
-#   JIRA_API_TOKEN      that account's Atlassian API token; else Parameter Store chg_sta_jira_token
-#   GITHUB_TOKEN        token able to read CHANGELOG_REPO; else Parameter Store chg_sta_github_token
+#   JIRA_EMAIL          Atlassian account the page is edited as; else Parameter Store chg_jira_email
+#   JIRA_API_TOKEN      that account's Atlassian API token; else Parameter Store chg_jira_token
+#   GITHUB_TOKEN        token able to read CHANGELOG_REPO; else Parameter Store chg_github_token
 #   JIRA_HOST           default https://playlogiq.atlassian.net
-#   CHANGELOG_SSM_PREFIX  Parameter Store name prefix for the three credentials; default chg_sta_
+#   CHANGELOG_SSM_PREFIX  Parameter Store name prefix for the three credentials; default chg_
 #   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
 #                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
 #   DRY_RUN=1           print the entry without touching Confluence
@@ -68,8 +68,8 @@ if [[ "$CONFLUENCE_PAGE" =~ /pages/([0-9]+) ]]; then page_id="${BASH_REMATCH[1]}
 [[ "$page_id" =~ ^[0-9]+$ ]] || fail "cannot read a page id from CONFLUENCE_PAGE '$CONFLUENCE_PAGE'; skipping the Confluence changelog"
 
 # Credentials not set on the project are read from Parameter Store (needs the aws CLI and ssm:GetParameter).
-# The default prefix is staging's; another environment's project sets its own CHANGELOG_SSM_PREFIX.
-ssm_prefix="${CHANGELOG_SSM_PREFIX:-chg_sta_}"
+# The default prefix is shared by every environment; a project with its own credentials sets CHANGELOG_SSM_PREFIX.
+ssm_prefix="${CHANGELOG_SSM_PREFIX:-chg_}"
 for pair in JIRA_EMAIL:jira_email JIRA_API_TOKEN:jira_token GITHUB_TOKEN:github_token; do
     v="${pair%%:*}" param="$ssm_prefix${pair#*:}"
     [[ -n "${!v:-}" ]] && continue

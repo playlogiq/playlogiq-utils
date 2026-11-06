@@ -254,16 +254,38 @@ class ImplementationSecretKeysTest extends ConfiguredTestCase
 
         $this->assertSame(SecretMask::mask('s3cret'), ServiceConfigurationProfileKey::maskIfSecretForScp($scp->id, 'client_password', 's3cret'));
         $this->assertSame('plain', ServiceConfigurationProfileKey::maskIfSecretForScp($scp->id, 'api_key', 'plain'));
+        $this->assertNull(ServiceConfigurationProfileKey::maskIfSecretForScp($scp->id, 'client_password', null));
+        $this->assertSame('', ServiceConfigurationProfileKey::maskIfSecretForScp($scp->id, 'client_password', ''));
+    }
+
+    public function test_mask_if_secret_keeps_the_unified_list(): void
+    {
+        $this->assertSame(SecretMask::mask('s3cret'), ServiceConfigurationProfileKey::maskIfSecret('api_key', 's3cret'));
+        $this->assertSame('plain', ServiceConfigurationProfileKey::maskIfSecret('client_password', 'plain'));
+    }
+
+    public function test_the_mask_fallback_is_a_subclass_mask_if_secret(): void
+    {
+        $model = get_class(new class extends ServiceConfigurationProfileKey {
+            public static function maskIfSecret($key, $value)
+            {
+                return 'subclass:' . $key;
+            }
+        });
+
+        $this->assertSame('subclass:api_key', $model::maskIfSecretForScp($this->profile('NoSchemaImplementation')->id, 'api_key', 'x'));
+        $this->assertSame('subclass:api_key', $model::maskIfSecretForScp(null, 'api_key', 'x'));
+        // Structured implementations do not reach the fallback.
+        $this->assertSame('x', $model::maskIfSecretForScp($this->profile('StructuredConfigKeysImplementation')->id, 'api_key', 'x'));
     }
 
     /** @dataProvider unifiedListMaskCodes */
     public function test_mask_falls_back_to_the_unified_list(?string $code): void
     {
-        $scpId = $code === null ? null : $this->profile($code)->id;
+        $scpId = $code === 'missing' ? 999 : ($code === null ? null : $this->profile($code)->id);
 
         $this->assertSame(SecretMask::mask('s3cret'), ServiceConfigurationProfileKey::maskIfSecretForScp($scpId, 'api_key', 's3cret'));
         $this->assertSame('plain', ServiceConfigurationProfileKey::maskIfSecretForScp($scpId, 'client_password', 'plain'));
-        $this->assertSame(SecretMask::mask('s3cret'), ServiceConfigurationProfileKey::maskIfSecret('api_key', 's3cret'));
     }
 
     public function unifiedListMaskCodes(): array
@@ -272,6 +294,7 @@ class ImplementationSecretKeysTest extends ConfiguredTestCase
             'no $config_keys' => ['NoSchemaImplementation'],
             'flat $config_keys' => ['FlatConfigKeysImplementation'],
             'no scp_id' => [null],
+            'scp_id of no profile' => ['missing'],
         ];
     }
 

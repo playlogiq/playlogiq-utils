@@ -4,6 +4,7 @@ namespace PlaylogiqUtils\ServiceConfiguration\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use PlaylogiqUtils\Crypto\EncryptsSpecificKeys;
+use PlaylogiqUtils\ServiceConfiguration\ConfigKeys;
 use PlaylogiqUtils\ServiceConfiguration\SecretMask;
 use PlaylogiqUtils\ServiceConfiguration\TypeRegistry;
 
@@ -110,16 +111,8 @@ class ServiceConfigurationProfileKey extends Model
             return null;
         }
         $class = TypeRegistry::resolveImplementationClass((int) $profile->type, $profile->code);
-        if ($class === null || !class_exists($class)) {
-            return null;
-        }
-        // Read without constructing the class, as backoffice's PaymentProvider::configKeysOf().
-        $declared = (new \ReflectionClass($class))->getDefaultProperties()['config_keys'] ?? null;
-        if (!is_array($declared) || !is_array($declared['secrets'] ?? null) || !is_array($declared['non_secrets'] ?? null)) {
-            return null;
-        }
 
-        return array_values($declared['secrets']);
+        return $class === null ? null : (ConfigKeys::of($class)['secrets'] ?? null);
     }
 
     /** Masks a secret key's value, e.g. for logs and audit rows (PQPL-6313). */

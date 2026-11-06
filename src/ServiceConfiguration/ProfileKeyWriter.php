@@ -32,10 +32,10 @@ class ProfileKeyWriter
         $keyModel = $scp::keyModel();
 
         foreach ($plan['upsert'] as $key => $value) {
-            $keyModel::updateOrCreate(
-                ['scp_id' => $scp->id, 'key' => $key],
-                ['value' => $value]
-            );
+            // updateOrCreate() spelled out to hand the row its profile, so the cast needs no lookup (PQPL-7470).
+            $row = $keyModel::firstOrNew(['scp_id' => $scp->id, 'key' => $key]);
+            $row->setRelation('profile', $scp);
+            $row->fill(['value' => $value])->save();
         }
 
         $deleteQuery = $keyModel::where('scp_id', $scp->id);

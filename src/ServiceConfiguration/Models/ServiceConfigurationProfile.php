@@ -74,5 +74,10 @@ class ServiceConfigurationProfile extends Model
         static::deleting(function (ServiceConfigurationProfile $scp) {
             $scp->keys()->delete();
         });
+
+        // type/code decide which keys are encrypted (PQPL-7470).
+        static::saved(function (ServiceConfigurationProfile $scp) {
+            ServiceConfigurationProfileKey::forgetDeclaredSecretKeys($scp->getKey());
+        });
     }
 }

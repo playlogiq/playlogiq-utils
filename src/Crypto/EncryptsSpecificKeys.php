@@ -63,11 +63,27 @@ class EncryptsSpecificKeys implements CastsAttributes {
     }
 
     /**
+     * PQPL-7470: a model can declare the row's secrets itself (declaredSecretKeys(), null =
+     * no opinion), replacing the unified list. Decided here, so a subclass overriding only
+     * secretKeysFor() keeps it.
+     */
+    protected static function encryptsKey(?string $targetKey, $model): bool
+    {
+        $declared = is_object($model) && method_exists($model, 'declaredSecretKeys') ? $model->declaredSecretKeys() : null;
+        if ($declared !== null) {
+            return $targetKey !== null && in_array($targetKey, $declared, true);
+        }
+
+        return static::isSecretKey($targetKey, $model);
+    }
+
+    /**
      * Runs automatically when reading data: $model->value
      */
     public function get($model, string $key, $value, array $attributes) {
         $targetKey = $attributes['key'] ?? $attributes['setting'] ?? $attributes['s_key'] ?? $model->key ?? $model->setting ?? $model->s_key ?? null;
-        if (static::isSecretKey($targetKey, $model)) {
+        // Unified list too: rows encrypted before their key was declared non-secret still read back plain (PQPL-7470).
+        if (static::isSecretKey($targetKey, $model) || static::encryptsKey($targetKey, $model)) {
             if (empty($value)) return $value;
 
             // Compact format ("c1:" / "c2:"). Single decrypt — fits in VARCHAR(255).
@@ -119,7 +135,7 @@ class EncryptsSpecificKeys implements CastsAttributes {
      */
     public function set($model, string $key, $value, array $attributes) {
         $targetKey = $attributes['key'] ?? $attributes['setting'] ?? $attributes['s_key'] ?? $model->key ?? $model->setting ?? $model->s_key ?? null;
-        if (static::isSecretKey($targetKey, $model)) {
+        if (static::encryptsKey($targetKey, $model)) {
             if (empty($value)) return $value;
 
             $stringValue = (string) $value;

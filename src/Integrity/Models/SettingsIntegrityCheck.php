@@ -48,6 +48,7 @@ class SettingsIntegrityCheck extends Model
     public const STATUS_NOT_REGULATED = 4;
     public const STATUS_DISABLED      = 5;
     public const STATUS_FAILED        = 6;
+    public const STATUS_FIXED         = 7;
 
     /**
      * Stored value => the guard's outcome. The labels are the guard's own words, so the
@@ -62,6 +63,21 @@ class SettingsIntegrityCheck extends Model
         self::STATUS_NOT_REGULATED => CriticalSettingsGuard::CHECK_NOT_REGULATED,
         self::STATUS_DISABLED      => CriticalSettingsGuard::CHECK_DISABLED,
         self::STATUS_FAILED        => CriticalSettingsGuard::CHECK_FAILED,
+        self::STATUS_FIXED         => CriticalSettingsGuard::CHECK_FIXED,
+    ];
+
+    /**
+     * What the guard did with the save it compared: only on a row CriticalSettingsGuard::check()
+     * writes before a save. Null on every other row — the check after a save, the button, the
+     * daily run — because nothing was being decided.
+     */
+    public const ACTION_ACCEPTED = 1;
+    public const ACTION_REJECTED = 2;
+
+    /** @var array<int, string> */
+    public const ACTIONS = [
+        self::ACTION_ACCEPTED => 'accepted',
+        self::ACTION_REJECTED => 'rejected',
     ];
 
     protected $table = 'settings_integrity_checks';
@@ -72,6 +88,7 @@ class SettingsIntegrityCheck extends Model
         'skin_id',
         'trigger',
         'status',
+        'action',
         'compared_to',
         'drift',
         'error',
@@ -83,6 +100,7 @@ class SettingsIntegrityCheck extends Model
         'skin_id' => 'integer',
         'trigger' => 'integer',
         'status' => 'integer',
+        'action' => 'integer',
         'drift' => 'array',
         'created_by' => 'integer',
         'created_at' => 'datetime',
@@ -114,6 +132,12 @@ class SettingsIntegrityCheck extends Model
     public function statusLabel(): string
     {
         return self::STATUSES[$this->status] ?? 'unknown';
+    }
+
+    /** Null when the row decided nothing. */
+    public function actionLabel(): ?string
+    {
+        return $this->action === null ? null : (self::ACTIONS[$this->action] ?? 'unknown');
     }
 
     public function triggerLabel(): string

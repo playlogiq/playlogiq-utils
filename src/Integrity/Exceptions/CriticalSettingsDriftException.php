@@ -7,12 +7,13 @@ namespace PlaylogiqUtils\Integrity\Exceptions;
 use RuntimeException;
 
 /**
- * GLI-33 — a skin's (or the global) live critical settings no longer match the newest snapshot, and the
- * mismatch is in a setting this save does not touch.
+ * GLI-33 — a skin's (or the global) live critical settings no longer match the newest snapshot, and
+ * this save writes none of the settings that disagree.
  *
  * Thrown before anything is written, so the save is refused whole rather than half
- * applied. A mismatch inside the save's own scope does not reach here: the operator is
- * overwriting that value anyway, and the new snapshot records what they chose.
+ * applied. A save that writes at least one of them does not reach here: the operator is
+ * overwriting those values anyway, the new snapshot records what they chose, and the
+ * others keep their previous snapshot value.
  *
  * CriticalSettingsGuard resolves it through the container with `settings` and `global`
  * parameters, so an application can bind a subclass that words the refusal for its

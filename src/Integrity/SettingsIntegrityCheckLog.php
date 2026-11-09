@@ -25,13 +25,14 @@ class SettingsIntegrityCheckLog
     /**
      * Returns the row's id, or null when it could not be written.
      *
-     * @param array{skin_id: int|null, status: string, compared_to: string|null, drift: array, error: string|null} $report
-     *        the guard's report shape: `status` is one of its CHECK_* outcomes
+     * @param array{skin_id: int|null, status: string, compared_to: string|null, drift: array, error: string|null, action?: int|null} $report
+     *        the guard's report shape: `status` is one of its CHECK_* outcomes, `action` one of
+     *        SettingsIntegrityCheck's ACTION_* when the row is a save's pre-save check
      */
     public function record(int $trigger, array $report, ?int $userId): ?int
     {
         try {
-            return (int) SettingsIntegrityCheck::create([
+            $attributes = [
                 // Null is the global settings scope.
                 'skin_id'     => $report['skin_id'] === null ? null : (int) $report['skin_id'],
                 'trigger'     => $trigger,
@@ -41,7 +42,15 @@ class SettingsIntegrityCheckLog
                 'error'       => $report['error'],
                 'created_by'  => $userId,
                 'created_at'  => now('UTC'),
-            ])->id;
+            ];
+
+            // Only when given (the guard's pre-save check), so a table that has no action
+            // column yet keeps working for every other row.
+            if (isset($report['action'])) {
+                $attributes['action'] = (int) $report['action'];
+            }
+
+            return (int) SettingsIntegrityCheck::create($attributes)->id;
         } catch (Throwable $e) {
             Log::critical(sprintf(
                 'SettingsIntegrityCheckLog: could not record the %s check of %s (%s): %s',

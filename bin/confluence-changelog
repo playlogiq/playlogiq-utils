@@ -33,9 +33,11 @@
 #   CONFLUENCE_PAGE     required: the changelog page URL (or a numeric page id)
 #   JIRA_EMAIL          Atlassian account the page is edited as; else Parameter Store chg_jira_email
 #   JIRA_API_TOKEN      that account's Atlassian API token; else Parameter Store chg_jira_token
+#                       (chg_sta_jira_token when CHANGELOG_ENV=staging)
 #   GITHUB_TOKEN        token able to read CHANGELOG_REPO; else Parameter Store chg_github_token
 #   JIRA_HOST           default https://playlogiq.atlassian.net
 #   CHANGELOG_SSM_PREFIX  Parameter Store name prefix for the three credentials; default chg_
+#   CHANGELOG_ENV       production (default) or staging: which Jira token is read from Parameter Store
 #   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
 #                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
 #   DRY_RUN=1           print the entry without touching Confluence
@@ -70,7 +72,12 @@ if [[ "$CONFLUENCE_PAGE" =~ /pages/([0-9]+) ]]; then page_id="${BASH_REMATCH[1]}
 # Credentials not set on the project are read from Parameter Store (needs the aws CLI and ssm:GetParameter).
 # The default prefix is shared by every environment; a project with its own credentials sets CHANGELOG_SSM_PREFIX.
 ssm_prefix="${CHANGELOG_SSM_PREFIX:-chg_}"
-for pair in JIRA_EMAIL:jira_email JIRA_API_TOKEN:jira_token GITHUB_TOKEN:github_token; do
+case "${CHANGELOG_ENV:-production}" in
+    production|prod) jira_token_param=jira_token ;;
+    staging|sta) jira_token_param=sta_jira_token ;;
+    *) fail "CHANGELOG_ENV '$CHANGELOG_ENV' is not production or staging; skipping the Confluence changelog" ;;
+esac
+for pair in JIRA_EMAIL:jira_email "JIRA_API_TOKEN:$jira_token_param" GITHUB_TOKEN:github_token; do
     v="${pair%%:*}" param="$ssm_prefix${pair#*:}"
     [[ -n "${!v:-}" ]] && continue
     command -v aws >/dev/null || fail "$v is not set and the aws CLI is not on this build image to read $param; skipping the Confluence changelog"

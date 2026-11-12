@@ -21,9 +21,12 @@
 # application root (which component inventory the release was certified against); a project
 # without that file gets no manifest in the facts line.
 #
-# No state cache (CodeBuild keeps nothing between builds): the page itself is the state. A deploy
-# whose commit already heads an entry on the page appends nothing; a commit only listed inside an
-# older entry (e.g. a rollback) still gets its own entry.
+# No state cache (CodeBuild keeps nothing between builds): the page itself is the state. An entry
+# lists only what is new: the walk stops at the first commit that already heads an entry on the
+# page (the previous deploy), so a commit is never listed in two entries; when none of the last 15
+# heads an entry (first deploy, or more than 15 since the last one) all 15 are listed. A deploy
+# whose commit already heads an entry appends nothing; a commit only listed inside an older entry
+# (e.g. a rollback) still gets its own entry.
 #
 # A changelog problem never fails the deploy: every error is logged and the script exits
 # 0, unless CHANGELOG_STRICT=1. Which environments run it is decided per CodeBuild project.
@@ -40,7 +43,7 @@
 #   CHANGELOG_ENV       production (default) or staging: which Jira token is read from Parameter Store
 #   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
 #                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
-#   DRY_RUN=1           print the entry without touching Confluence
+#   DRY_RUN=1           print the entry without changing Confluence (the page is still read)
 #   CHANGELOG_STRICT=1  exit non-zero on error instead of 0
 #
 # Run from the application root:  vendor/bin/confluence-changelog
@@ -144,6 +147,21 @@ gh_commit() {
     printf '%s' "$code"
 }
 
+# Scoped API tokens are only accepted on the api.atlassian.com gateway, which is addressed by cloud id.
+cloud_id="$(curl -fsS --connect-timeout 10 --max-time 30 "$JIRA_HOST/_edge/tenant_info" | jq -r '.cloudId // empty')" || true
+[[ -n "$cloud_id" ]] || fail "could not resolve the Atlassian cloud id of $JIRA_HOST; skipping the Confluence changelog"
+page_url="https://api.atlassian.com/ex/confluence/$cloud_id/wiki/api/v2/pages/$page_id"
+
+# The page is read before the commits: the commits heading its entries are where the new entry stops.
+curl -fsS --connect-timeout 10 --max-time 30 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" "$page_url?body-format=storage" -o "$WORKDIR/page.json" \
+    || fail "could not read Confluence page $page_id; skipping the Confluence changelog"
+# Short hashes heading an entry, one per line: "<code>abc1234</code></h2>" and the older
+# mcp-jira-updates "Release / Deployment Update: abc1234</h2>" headings.
+jq -r '.body.storage.value // "" | [scan("<code>([0-9a-f]{7,40})</code></h2>"), scan("Deployment Update: ([0-9a-f]{7,40})</h2>")] | .[][] | .[0:7]' \
+    "$WORKDIR/page.json" | sort -u > "$WORKDIR/headed.txt" \
+    || fail "could not read the entries of Confluence page $page_id; skipping the Confluence changelog"
+is_headed() { grep -qx "${1:0:7}" "$WORKDIR/headed.txt"; }
+
 status="$(gh_commit "$ref")"
 # The resolved sha belongs to the build's primary source, which need not be CHANGELOG_REPO: GitHub
 # answers 422 (or 404) for a sha it does not have, and then the entry is headed by the branch tip.
@@ -160,6 +178,16 @@ sha="$ref"
 for i in $(seq 15); do
     (( i == 1 )) || status="$(gh_commit "$sha")"
     [[ "$status" == 200 ]] || fail "GitHub API read of $sha returned HTTP $status; skipping the Confluence changelog"
+    if (( i == 1 )) && is_headed "$(jq -r '.sha' "$WORKDIR/commit.json")"; then
+        # A re-deploy of something already logged. Only headings count: a rollback to a commit
+        # listed inside an older entry is still logged.
+        log "commit $(jq -r '.sha[0:7]' "$WORKDIR/commit.json") already heads an entry on the Confluence page; nothing to do"
+        exit 0
+    fi
+    if (( i > 1 )) && is_headed "$sha"; then
+        log "stopping at ${sha:0:7}, which heads the previous entry"
+        break
+    fi
     jq -c '{sha, author: (.commit.author.name // .author.login // "Unknown"), message: .commit.message, merge: ((.parents | length) > 1)}' \
         "$WORKDIR/commit.json" >> "$WORKDIR/commits.jsonl"
     sha="$(jq -r '.parents[0].sha // empty' "$WORKDIR/commit.json")"
@@ -188,25 +216,10 @@ jq -rs --arg mv "$INVENTORY_VERSION" --arg at "$STARTED_AT" --arg pipeline_url "
 ' "$WORKDIR/commits.jsonl" > "$WORKDIR/entry.html" || fail "could not build the changelog entry; skipping the Confluence changelog"
 head_short="$(jq -rs '.[0].sha[0:7]' "$WORKDIR/commits.jsonl")"
 
+log "sync $CHANGELOG_REPO@$head_short ($(wc -l < "$WORKDIR/commits.jsonl" | tr -d ' ') new commits) -> $CONFLUENCE_PAGE"
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
     log "dry run, entry for page $page_id:"
     cat "$WORKDIR/entry.html"; echo
-    exit 0
-fi
-
-# Scoped API tokens are only accepted on the api.atlassian.com gateway, which is addressed by cloud id.
-cloud_id="$(curl -fsS --connect-timeout 10 --max-time 30 "$JIRA_HOST/_edge/tenant_info" | jq -r '.cloudId // empty')" || true
-[[ -n "$cloud_id" ]] || fail "could not resolve the Atlassian cloud id of $JIRA_HOST; skipping the Confluence changelog"
-page_url="https://api.atlassian.com/ex/confluence/$cloud_id/wiki/api/v2/pages/$page_id"
-
-log "sync $CHANGELOG_REPO@$head_short -> $CONFLUENCE_PAGE"
-curl -fsS --connect-timeout 10 --max-time 30 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" "$page_url?body-format=storage" -o "$WORKDIR/page.json" \
-    || fail "could not read Confluence page $page_id; skipping the Confluence changelog"
-
-# Skip if the deployed commit already heads an entry (a re-deploy of something already logged).
-# Only headings count: a rollback to a commit listed inside an older entry is still logged.
-if jq -e --arg c "<code>$head_short</code></h2>" '.body.storage.value // "" | contains($c)' "$WORKDIR/page.json" >/dev/null; then
-    log "commit $head_short is already in the Confluence page; nothing to do"
     exit 0
 fi
 

@@ -14,7 +14,9 @@
 # XHTML, prepended to the page through the Confluence v2 API on the api.atlassian.com gateway
 # (so a scoped token with read/write:page:confluence works).
 #
-# Entry layout: a date | commit heading, one facts line (manifest, build link, pipeline link;
+# On production (CHANGELOG_ENV), each new entry's commit is also tagged release-<date> on CHANGELOG_REPO (see CHANGELOG_TAG).
+#
+# Entry layout: a date | commit heading, one facts line (tag, manifest, build link, pipeline link;
 # each only when known, the line left out when none is), then one Changes list: merges
 # into main first, then direct commits. Jira keys link to
 # JIRA_HOST. The manifest is the inventory_version of integrity-manifest.json in the
@@ -43,7 +45,9 @@
 #   CHANGELOG_ENV       production (default) or staging: which Jira token is read from Parameter Store
 #   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
 #                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
-#   DRY_RUN=1           print the entry without changing Confluence (the page is still read)
+#   CHANGELOG_TAG       tag the deployed commit release-<date> on CHANGELOG_REPO (the GitHub token
+#                       then needs contents:write): 1 by default on production, 0 on staging
+#   DRY_RUN=1           print the entry without changing Confluence or tagging (the page is still read)
 #   CHANGELOG_STRICT=1  exit non-zero on error instead of 0
 #
 # Run from the application root:  vendor/bin/confluence-changelog
@@ -76,8 +80,8 @@ if [[ "$CONFLUENCE_PAGE" =~ /pages/([0-9]+) ]]; then page_id="${BASH_REMATCH[1]}
 # The default prefix is shared by every environment; a project with its own credentials sets CHANGELOG_SSM_PREFIX.
 ssm_prefix="${CHANGELOG_SSM_PREFIX:-chg_}"
 case "${CHANGELOG_ENV:-production}" in
-    production|prod) jira_token_param=jira_token ;;
-    staging|sta) jira_token_param=sta_jira_token ;;
+    production|prod) jira_token_param=jira_token tag_default=1 ;;
+    staging|sta) jira_token_param=sta_jira_token tag_default=0 ;;
     *) fail "CHANGELOG_ENV '$CHANGELOG_ENV' is not production or staging; skipping the Confluence changelog" ;;
 esac
 for pair in JIRA_EMAIL:jira_email "JIRA_API_TOKEN:$jira_token_param" GITHUB_TOKEN:github_token; do
@@ -193,10 +197,39 @@ for i in $(seq 15); do
     sha="$(jq -r '.parents[0].sha // empty' "$WORKDIR/commit.json")"
     [[ -n "$sha" ]] || break
 done
+head_sha="$(jq -rs '.[0].sha' "$WORKDIR/commits.jsonl")"
+
+# Tags the deployed commit release-<date> (release-<date>-<HHMM> when the day's tag is on another
+# commit), through the GitHub git refs API (GITHUB_TOKEN needs contents:write). A tag that cannot be
+# made is logged and the entry goes on without it.
+gh_ref() {
+    local code rc=0
+    code="$(curl -sS --connect-timeout 10 --max-time 30 -o "$WORKDIR/ref.json" -w '%{http_code}' \
+        -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$@")" || rc=$?
+    if (( rc != 0 )); then code=000; fi
+    printf '%s' "$code"
+}
+release_tag=""
+if [[ "${CHANGELOG_TAG:-$tag_default}" == 1 ]]; then
+    for tag in "release-${STARTED_AT:0:10}" "release-${STARTED_AT:0:10}-${STARTED_AT:11:2}${STARTED_AT:14:2}"; do
+        if [[ "${DRY_RUN:-0}" == 1 ]]; then release_tag="$tag"; log "dry run, would tag ${head_sha:0:7} $tag"; break; fi
+        status="$(gh_ref -X POST --data "$(jq -nc --arg r "refs/tags/$tag" --arg s "$head_sha" '{ref: $r, sha: $s}')" \
+            "https://api.github.com/repos/$CHANGELOG_REPO/git/refs")"
+        if [[ "$status" == 201 ]]; then release_tag="$tag"; log "tagged ${head_sha:0:7} $tag"; break; fi
+        # 422: the tag exists. Fine when it is already on this commit, else try the next name.
+        if [[ "$status" == 422 && "$(gh_ref "https://api.github.com/repos/$CHANGELOG_REPO/git/ref/tags/$tag")" == 200 ]] \
+            && [[ "$(jq -r '.object.sha // empty' "$WORKDIR/ref.json")" == "$head_sha" ]]; then
+            release_tag="$tag"; log "$tag is already on ${head_sha:0:7}"; break
+        fi
+        [[ "$status" == 422 ]] || { log "could not tag ${head_sha:0:7} $tag (HTTP $status); the entry has no tag"; break; }
+    done
+    [[ -n "$release_tag" ]] || log "no release tag for ${head_sha:0:7}"
+fi
 
 # Storage-format XHTML entry: date first, one line of release facts, then merges, then direct commits.
 jq -rs --arg mv "$INVENTORY_VERSION" --arg at "$STARTED_AT" --arg pipeline_url "$pipeline_url" \
-       --arg run_id "$run_id" --arg run_url "$run_url" --arg browse "$JIRA_HOST/browse/" '
+       --arg run_id "$run_id" --arg run_url "$run_url" --arg browse "$JIRA_HOST/browse/" \
+       --arg tag "$release_tag" --arg tag_url "https://github.com/$CHANGELOG_REPO/tree/$release_tag" '
     def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\""; "&quot;");
     def linkjira: gsub("\\b(?<t>[A-Z][A-Z0-9]+-[0-9]+)\\b"; "<a href=\"\($browse | esc)\(.t)\">\(.t)</a>");
     def item:
@@ -204,7 +237,8 @@ jq -rs --arg mv "$INVENTORY_VERSION" --arg at "$STARTED_AT" --arg pipeline_url "
         | "<li><code>\(.sha[0:7])</code> \($title | esc | linkjira) <em>— \(.author | esc)</em></li>";
     . as $commits | $commits[0] as $head
     | "<h2>📅 \($at[0:10]) · \($at[11:16]) UTC | <code>\($head.sha[0:7])</code></h2>"
-      + ([ (if $mv == "" then empty else "manifest <code>\($mv | esc)</code>" end),
+      + ([ (if $tag == "" then empty else "tag <a href=\"\($tag_url | esc)\"><code>\($tag | esc)</code></a>" end),
+           (if $mv == "" then empty else "manifest <code>\($mv | esc)</code>" end),
            (if $run_id == "" then empty elif $run_url == "" then "build \($run_id | esc)"
             else "<a href=\"\($run_url | esc)\">build</a>" end),
            (if $pipeline_url == "" then empty else "<a href=\"\($pipeline_url | esc)\">pipeline</a>" end)

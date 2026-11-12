@@ -440,7 +440,11 @@ is shown in the entry; without the file the entry has no manifest. An entry list
 only the commits since the previous deploy: the history stops at the first commit
 that already heads an entry on the page. The entry also
 links the CodeBuild build and, on CodePipeline builds (with `AWS_REGION` set), the
-pipeline view showing every stage's state. The other
+pipeline view showing every stage's state. On production, each new entry's commit is tagged
+`release-<date>` on `CHANGELOG_REPO` (`release-<date>-<HHMM>` when that day's tag
+is already on another commit) and the tag is shown in the entry; the GitHub token
+needs `contents:write` for it. Staging (`CHANGELOG_ENV=staging`) does not tag;
+`CHANGELOG_TAG=0` or `1` overrides the default. The other
 variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are
 documented at the top of the script. It never fails the deploy unless
 `CHANGELOG_STRICT=1`.

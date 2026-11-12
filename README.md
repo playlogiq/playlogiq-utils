@@ -441,8 +441,8 @@ only the commits since the previous deploy: the history stops at the first commi
 that already heads an entry on the page. The entry also
 links the CodeBuild build and, on CodePipeline builds (with `AWS_REGION` set), the
 pipeline view showing every stage's state. On production, each new entry's commit is tagged
-`release-<date>` on `CHANGELOG_REPO` (`release-<date>-<HHMM>` when that day's tag
-is already on another commit) and the tag is shown in the entry; the GitHub token
+`release-<date>-<short sha>` on `CHANGELOG_REPO` (e.g. `release-2026-11-12-a1b2c3d`,
+so several releases a day each get their own tag) and the tag is shown in the entry; the GitHub token
 needs `contents:write` for it. Staging (`CHANGELOG_ENV=staging`) does not tag;
 `CHANGELOG_TAG=0` or `1` overrides the default. The other
 variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are

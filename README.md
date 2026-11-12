@@ -436,7 +436,9 @@ vendor/bin/confluence-changelog
 ```
 
 If `integrity-manifest.json` is in the application root, its `inventory_version`
-is shown in the entry; without the file the entry has no manifest. The entry also
+is shown in the entry; without the file the entry has no manifest. An entry lists
+only the commits since the previous deploy: the history stops at the first commit
+that already heads an entry on the page. The entry also
 links the CodeBuild build and, on CodePipeline builds (with `AWS_REGION` set), the
 pipeline view showing every stage's state. The other
 variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are

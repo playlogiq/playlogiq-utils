@@ -14,7 +14,7 @@
 # XHTML, prepended to the page through the Confluence v2 API on the api.atlassian.com gateway
 # (so a scoped token with read/write:page:confluence works).
 #
-# On production (CHANGELOG_ENV), each new entry's commit is also tagged release-<date> on CHANGELOG_REPO (see CHANGELOG_TAG).
+# On production (CHANGELOG_ENV), each new entry's commit is also tagged release-<date>-<short sha> on CHANGELOG_REPO (see CHANGELOG_TAG).
 #
 # Entry layout: a date | commit heading, one facts line (tag, manifest, build link, pipeline link;
 # each only when known, the line left out when none is), then one Changes list: merges
@@ -45,7 +45,7 @@
 #   CHANGELOG_ENV       production (default) or staging: which Jira token is read from Parameter Store
 #   CHANGELOG_BRANCH    ref to read when CodeBuild gives no commit sha, or one that is not a
 #                       CHANGELOG_REPO commit (the entry is then headed by its tip); default main
-#   CHANGELOG_TAG       tag the deployed commit release-<date> on CHANGELOG_REPO (the GitHub token
+#   CHANGELOG_TAG       tag the deployed commit release-<date>-<short sha> on CHANGELOG_REPO (the GitHub token
 #                       then needs contents:write): 1 by default on production, 0 on staging
 #   DRY_RUN=1           print the entry without changing Confluence or tagging (the page is still read)
 #   CHANGELOG_STRICT=1  exit non-zero on error instead of 0
@@ -199,9 +199,9 @@ for i in $(seq 15); do
 done
 head_sha="$(jq -rs '.[0].sha' "$WORKDIR/commits.jsonl")"
 
-# Tags the deployed commit release-<date> (release-<date>-<HHMM> when the day's tag is on another
-# commit), through the GitHub git refs API (GITHUB_TOKEN needs contents:write). A tag that cannot be
-# made is logged and the entry goes on without it.
+# Tags the deployed commit release-<date>-<short sha> (one tag per deployed commit, however many
+# deploys a day), through the GitHub git refs API (GITHUB_TOKEN needs contents:write). A tag that
+# cannot be made is logged and the entry goes on without it.
 gh_ref() {
     local code rc=0
     code="$(curl -sS --connect-timeout 10 --max-time 30 -o "$WORKDIR/ref.json" -w '%{http_code}' \
@@ -211,19 +211,22 @@ gh_ref() {
 }
 release_tag=""
 if [[ "${CHANGELOG_TAG:-$tag_default}" == 1 ]]; then
-    for tag in "release-${STARTED_AT:0:10}" "release-${STARTED_AT:0:10}-${STARTED_AT:11:2}${STARTED_AT:14:2}"; do
-        if [[ "${DRY_RUN:-0}" == 1 ]]; then release_tag="$tag"; log "dry run, would tag ${head_sha:0:7} $tag"; break; fi
+    tag="release-${STARTED_AT:0:10}-${head_sha:0:7}"
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then
+        release_tag="$tag"; log "dry run, would tag ${head_sha:0:7} $tag"
+    else
         status="$(gh_ref -X POST --data "$(jq -nc --arg r "refs/tags/$tag" --arg s "$head_sha" '{ref: $r, sha: $s}')" \
             "https://api.github.com/repos/$CHANGELOG_REPO/git/refs")"
-        if [[ "$status" == 201 ]]; then release_tag="$tag"; log "tagged ${head_sha:0:7} $tag"; break; fi
-        # 422: the tag exists. Fine when it is already on this commit, else try the next name.
-        if [[ "$status" == 422 && "$(gh_ref "https://api.github.com/repos/$CHANGELOG_REPO/git/ref/tags/$tag")" == 200 ]] \
+        if [[ "$status" == 201 ]]; then
+            release_tag="$tag"; log "tagged ${head_sha:0:7} $tag"
+        # 422: the tag exists, which is fine when it is on this commit.
+        elif [[ "$status" == 422 && "$(gh_ref "https://api.github.com/repos/$CHANGELOG_REPO/git/ref/tags/$tag")" == 200 ]] \
             && [[ "$(jq -r '.object.sha // empty' "$WORKDIR/ref.json")" == "$head_sha" ]]; then
-            release_tag="$tag"; log "$tag is already on ${head_sha:0:7}"; break
+            release_tag="$tag"; log "$tag is already on ${head_sha:0:7}"
+        else
+            log "could not tag ${head_sha:0:7} $tag (HTTP $status); the entry has no tag"
         fi
-        [[ "$status" == 422 ]] || { log "could not tag ${head_sha:0:7} $tag (HTTP $status); the entry has no tag"; break; }
-    done
-    [[ -n "$release_tag" ]] || log "no release tag for ${head_sha:0:7}"
+    fi
 fi
 
 # Storage-format XHTML entry: date first, one line of release facts, then merges, then direct commits.

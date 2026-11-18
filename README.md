@@ -561,7 +561,8 @@ skips them; the owner columns (`owner_type`/`owner_id`) are new.
 | `ProfileKeyWriter` | Saves submitted keys: schema keys only, masked/empty secrets keep the stored value, missing keys deleted one by one (model events fire). |
 | `SecretMask` | `mask()` (same output as Betmaker's `hide_sensitive_data()`), `looksMasked()`, `secretKeysOf($schema)`. |
 | `Models\ServiceConfigurationProfile` / `...Key` | Base models: `keys()`, `owner()` (morph), key deletion on profile delete, encrypted secret values. |
-| `PlaylogiqUtils\Crypto\EncryptsSpecificKeys` | The cast that encrypts a key/value row's value when its key names a secret. |
+| `Casts\EncryptsSchemaSecrets` | The key value cast: encrypts when the provider's `configSchema()` marks the key secret, decrypts any stored payload. |
+| `PlaylogiqUtils\Crypto\StoredSecret` | `encrypt($value)` / `decrypt($value, $logContext)` of a stored secret, shared by every encrypting cast. |
 
 ### What the application provides
 

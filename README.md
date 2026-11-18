@@ -436,9 +436,15 @@ vendor/bin/confluence-changelog
 ```
 
 If `integrity-manifest.json` is in the application root, its `inventory_version`
-is shown in the entry; without the file the entry has no manifest. The entry also
+is shown in the entry; without the file the entry has no manifest. An entry lists
+only the commits since the previous deploy: the history stops at the first commit
+that already heads an entry on the page. The entry also
 links the CodeBuild build and, on CodePipeline builds (with `AWS_REGION` set), the
-pipeline view showing every stage's state. The other
+pipeline view showing every stage's state. On production, each new entry's commit is tagged
+`release-<date>-<short sha>` on `CHANGELOG_REPO` (e.g. `release-2026-11-12-a1b2c3d`,
+so several releases a day each get their own tag) and the tag is shown in the entry; the GitHub token
+needs `contents:write` for it. Staging (`CHANGELOG_ENV=staging`) does not tag;
+`CHANGELOG_TAG=0` or `1` overrides the default. The other
 variables (credentials, `JIRA_HOST`, `DRY_RUN=1`, `CHANGELOG_STRICT=1`, ...) are
 documented at the top of the script. It never fails the deploy unless
 `CHANGELOG_STRICT=1`.
@@ -559,7 +565,8 @@ skips them; the owner columns (`owner_type`/`owner_id`) are new.
 | `ProfileKeyWriter` | Saves submitted keys: schema keys only, masked/empty secrets keep the stored value, missing keys deleted one by one (model events fire). |
 | `SecretMask` | `mask()` (same output as Betmaker's `hide_sensitive_data()`), `looksMasked()`, `secretKeysOf($schema)`. |
 | `Models\ServiceConfigurationProfile` / `...Key` | Base models: `keys()`, `owner()` (morph), key deletion on profile delete, encrypted secret values. |
-| `PlaylogiqUtils\Crypto\EncryptsSpecificKeys` | The cast that encrypts a key/value row's value when its key names a secret. |
+| `Casts\EncryptsSchemaSecrets` | The key value cast: encrypts when the provider's `configSchema()` marks the key secret, decrypts any stored payload. |
+| `PlaylogiqUtils\Crypto\StoredSecret` | `encrypt($value)` / `decrypt($value, $logContext)` of a stored secret, shared by every encrypting cast. |
 
 ### What the application provides
 

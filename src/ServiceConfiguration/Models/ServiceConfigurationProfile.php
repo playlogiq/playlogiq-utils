@@ -4,6 +4,7 @@ namespace PlaylogiqUtils\ServiceConfiguration\Models;
 
 use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Model;
+use PlaylogiqUtils\Crypto\CompactCrypt;
 use PlaylogiqUtils\ServiceConfiguration\SchemaResolver;
 use PlaylogiqUtils\ServiceConfiguration\SecretMask;
 use PlaylogiqUtils\ServiceConfiguration\TypeRegistry;
@@ -52,6 +53,26 @@ class ServiceConfigurationProfile extends Model
     {
         return $this->secretKeysByImplementation[$this->type . '|' . $this->code]
             ??= SecretMask::secretKeysOf(Container::getInstance()->make(SchemaResolver::class)->resolve($this));
+    }
+
+    /**
+     * Encrypts the stored values of schema secrets still kept in clear, e.g. a key stored before
+     * its schema marked it secret: the admin only sends its mask back, so nothing else rewrites it.
+     */
+    public function encryptPlainSecrets(): void
+    {
+        $secrets = $this->secretKeys();
+
+        foreach ($this->keys()->get() as $key) {
+            $raw = $key->getRawOriginal('value');
+            if (isset($secrets[$key->key]) && is_string($raw) && $raw !== ''
+                && !CompactCrypt::isCompactPayload($raw) && !CompactCrypt::isLaravelCryptPayload($raw)
+            ) {
+                $key->setRelation('scp', $this);
+                $key->value = $raw;
+                $key->save();
+            }
+        }
     }
 
     public function owner()

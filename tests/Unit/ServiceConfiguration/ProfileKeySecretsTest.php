@@ -181,6 +181,27 @@ class ProfileKeySecretsTest extends ConfiguredTestCase
         $this->assertTrue(CompactCrypt::isCompactPayload($rows['api_key']->getAttributes()['value']));
     }
 
+    public function test_the_writer_encrypts_secrets_stored_in_clear_even_when_the_mask_is_submitted(): void
+    {
+        // A key stored before its schema marked it secret: the admin sends back only its mask.
+        $profile = ServiceConfigurationProfile::query()->create(['name' => 'e', 'type' => 2, 'code' => 'FakeImplementation']);
+        $this->rawKey($profile, 'api_key', 'sk_plain');
+        $encrypted = CompactCrypt::encrypt('xs');
+        $this->rawKey($profile, 'extra_secret', $encrypted);
+        $this->rawKey($profile, 'url', 'https://x');
+
+        (new ProfileKeyWriter(new SchemaResolver()))->persist(
+            ServiceConfigurationProfile::query()->find($profile->id),
+            ['api_key' => SecretMask::mask('sk_plain'), 'extra_secret' => SecretMask::mask('xs'), 'url' => 'https://x']
+        );
+
+        $rows = ServiceConfigurationProfileKey::query()->get()->keyBy('key');
+        $this->assertTrue(CompactCrypt::isCompactPayload($rows['api_key']->getAttributes()['value']));
+        $this->assertSame('sk_plain', $rows['api_key']->value);
+        $this->assertSame($encrypted, $rows['extra_secret']->getAttributes()['value']);
+        $this->assertSame('https://x', $rows['url']->getAttributes()['value']);
+    }
+
     public function test_an_encrypted_stored_value_is_masked_whatever_the_schema_says(): void
     {
         // Reads decrypt every payload, so an audit of a key no schema marks secret must not print it.

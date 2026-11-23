@@ -48,6 +48,8 @@ class ProfileKeyWriter
         foreach ($deleteQuery->get() as $row) {
             $row->delete();
         }
+
+        $scp->encryptPlainSecrets();
     }
 
     /**

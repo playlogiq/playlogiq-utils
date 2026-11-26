@@ -466,6 +466,11 @@ ring and the `encrypter` in its `AppServiceProvider`, and owns its
 - `CompactCrypt` is compact AES-256-GCM for short secrets (`c1:`/`c2:<kid>:` payloads);
   it resolves `AppKeyRing` from the container.
 - `UnknownKeyException` is thrown when a payload names a key id that is not on the ring.
+- `EncryptedSecretCast` is the Eloquent cast for a column that always holds a secret
+  (e.g. `users.google2fa_secret`): `StoredSecret` encryption, clear legacy values read back
+  unchanged. For rolling deploys use `EncryptedSecretCast::class . ':read-only'` first
+  (decrypts, writes as is), then the plain cast, then a backfill migration. Add the column to
+  the host's `secrets:rotate` tables so it is re-keyed with the rest.
 
 ## 🧾 Integrity manifest identity
 

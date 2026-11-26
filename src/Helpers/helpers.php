@@ -38,3 +38,32 @@ if (! function_exists('cache_get_compressed')) {
         return unserialize($serialized);
     }
 }
+
+if (! function_exists('redact_secret_keys')) {
+    /** @return string[] lower-case key names whose values are never logged (SecretRedactor::KEYS). */
+    function redact_secret_keys(): array
+    {
+        return \PlaylogiqUtils\Support\SecretRedactor::KEYS;
+    }
+}
+
+if (! function_exists('redact_secrets')) {
+    /**
+     * Replaces the value of every sensitive key with '[REDACTED]', recursively (SecretRedactor).
+     *
+     * @param mixed $data
+     * @return mixed
+     */
+    function redact_secrets($data, array $extraKeys = [])
+    {
+        return \PlaylogiqUtils\Support\SecretRedactor::redact($data, $extraKeys);
+    }
+}
+
+if (! function_exists('redact_url_query')) {
+    /** Replaces the value of every sensitive query parameter with '[REDACTED]' (SecretRedactor). */
+    function redact_url_query($url, array $extraKeys = []): string
+    {
+        return \PlaylogiqUtils\Support\SecretRedactor::redactUrlQuery($url, $extraKeys);
+    }
+}

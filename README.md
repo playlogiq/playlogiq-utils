@@ -605,3 +605,19 @@ skips them; the owner columns (`owner_type`/`owner_id`) are new.
    mass delete (trait boot methods run before `booted()`), so it can still snapshot the keys.
 
 Authorisation, controllers, views, routes and cache busting stay in the application.
+## 🙈 Secret redaction for logs
+
+`PlaylogiqUtils\Support\SecretRedactor` keeps passwords, OTPs, 2FA codes, API credentials and
+message bodies out of logs and audit records (GLI-33, PQPL-7871). Values are replaced by
+`[REDACTED]`, never partially masked.
+
+```php
+redact_secrets($request->all());                  // recursive, case-insensitive key match
+redact_secrets($payload, ['body']);               // extra keys for this call only
+redact_url_query($request->getRequestUri());      // ?password=…&msg=… → [REDACTED]
+redact_url_query($e->getMessage());               // also free text, e.g. Guzzle errors
+```
+
+The key list is `SecretRedactor::KEYS` (`redact_secret_keys()`). `token` is not on it: the
+password-recovery flows use it as a correlation id. Log `$e->getFile()` / `getLine()` instead of a
+stack trace: trace frame arguments carry the very values this redacts.

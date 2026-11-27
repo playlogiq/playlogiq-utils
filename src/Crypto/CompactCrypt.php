@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace PlaylogiqUtils\Crypto;
 
 use Illuminate\Container\Container;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Throwable;
 
 /**
  * Compact authenticated encryption for short secrets.
@@ -22,9 +24,10 @@ use RuntimeException;
  * The kid in a c2 payload is bound in as GCM additional authenticated data, so
  * a stored value cannot be relabelled to point at a different key without
  * failing the tag check. It is a lookup hint, not a requirement: a c2 payload
- * whose kid is not on the ring is tried against every ring key (the tag
- * still only opens under the key that wrote it), so clearing APP_KEY_ID or
- * APP_KEYS_OLD never makes a row unreadable as long as its key is still
+ * whose kid is not on the ring, or whose kid's key fails the tag check, is
+ * tried against every ring key (the tag still only opens under the key that
+ * wrote it), so clearing APP_KEY_ID or APP_KEYS_OLD, or reusing an id for a
+ * new key, never makes a row unreadable as long as its key is still
  * configured somewhere. c1 payloads carry no id, so they are always tried
  * against every key on the ring; kidOf() reports them as the reserved id
  * "app", which is what the ring calls APP_KEY when no APP_KEY_ID is set.
@@ -132,26 +135,47 @@ class CompactCrypt
 
             // The kid is authenticated, not just carried: a relabelled row
             // fails the tag check rather than decrypting under the wrong key.
+            $labelledFailure = null;
             if ($ring->has($kid)) {
-                return self::open($body, self::deriveKey($ring->keyFor($kid)->raw()), $kid);
-            }
-
-            // The kid names no key on the ring. That happens when APP_KEY_ID
-            // was cleared (or a key re-listed under a different id) while the
-            // key itself is still configured — the label changed, the material
-            // did not. Because the kid is GCM additional data, only the key
-            // that wrote the row can open it, so trying the whole ring is as
-            // safe as the direct lookup above. Only when none of them opens it
-            // is the key truly missing, and that is reported as an unknown key
-            // so secrets:rotate can tell the operator which id to restore.
-            foreach ($ring->all() as $entry) {
                 try {
-                    return self::open($body, self::deriveKey($entry->raw()), $kid);
+                    return self::open($body, self::deriveKey($ring->keyFor($kid)->raw()), $kid);
                 } catch (RuntimeException $e) {
-                    // try the next key
+                    $labelledFailure = $e;
                 }
             }
 
+            // Either the kid names no key on the ring, or the key under that id
+            // is not the one that wrote the row. The first happens when
+            // APP_KEY_ID was cleared (or a key re-listed under a different id)
+            // while the key itself is still configured. The second happens when
+            // a new APP_KEY is given an id already in use, or a process writes
+            // under a stale APP_KEY with the current APP_KEY_ID (PQPL-7871
+            // staging: rows "c2:k1:..." written with the key now listed as
+            // "app"). Because the kid is GCM additional data, only the key that
+            // wrote the row can open it, so trying the whole ring is as safe as
+            // the direct lookup above.
+            foreach ($ring->all() as $entry) {
+                if ($labelledFailure !== null && $entry->kid() === $kid) {
+                    continue;
+                }
+                try {
+                    $plain = self::open($body, self::deriveKey($entry->raw()), $kid);
+                } catch (RuntimeException $e) {
+                    continue;
+                }
+                if ($labelledFailure !== null) {
+                    self::warnMislabelled($kid, $entry->kid());
+                }
+
+                return $plain;
+            }
+
+            // Only when no key opens it is the key truly missing: an unknown id
+            // is reported as such so secrets:rotate can tell the operator which
+            // id to restore; a known id keeps its authentication failure.
+            if ($labelledFailure !== null) {
+                throw $labelledFailure;
+            }
             $ring->keyFor($kid); // throws UnknownKeyException
         }
 
@@ -198,6 +222,24 @@ class CompactCrypt
         }
 
         return $plain;
+    }
+
+    /**
+     * The row still reads, but its label is wrong: secrets:rotate treats it as already on
+     * $labelledKid and will not re-encrypt it, so it breaks for good once $openedBy leaves the
+     * ring. Say so, without the value. Logging must never make a readable secret unreadable.
+     */
+    private static function warnMislabelled(string $labelledKid, string $openedBy): void
+    {
+        try {
+            Log::warning('CompactCrypt: stored secret labelled with a key id that did not write it', [
+                'kid' => $labelledKid,
+                'opened_by' => $openedBy,
+                'action' => 'decrypt and re-encrypt the row under the current key',
+            ]);
+        } catch (Throwable $e) {
+            // no logger bound
+        }
     }
 
     private static function ring(): AppKeyRing

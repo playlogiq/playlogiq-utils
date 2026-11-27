@@ -1,0 +1,54 @@
+# Runs the PHPUnit suite on PHP 8.1 on a GitHub-hosted runner.
+# Self-contained: the repository is public, so it sets PHP up with
+# shivammathur/setup-php instead of using a private shared workflow or image.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR cancels the run still going; runs on main
+# are never cancelled.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  phpunit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          # pdo_sqlite: ProfileKeySecretsTest and CriticalSettingsGuardTest use
+          # SQLite in memory.
+          extensions: json, openssl, mbstring, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      # composer.lock is gitignored, so the cache key is composer.json.
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-php8.1-${{ hashFiles('composer.json') }}
+          restore-keys: composer-php8.1-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Check platform requirements
+        run: composer check-platform-reqs
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit
